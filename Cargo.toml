@@ -1,0 +1,17 @@
+[package]
+name = "claudeV"
+version = "0.1.0"
+edition = "2021"
+description = "claudeV — VCD Waveform Viewer"
+
+[[bin]]
+name = "claudeV"
+path = "src/main.rs"
+
+[dependencies]
+x11rb = { version = "0.13", features = ["allow-unsafe-code"] }
+
+[profile.release]
+opt-level = 3
+lto = true
+strip = true
