@@ -2,7 +2,7 @@
 
 A native X11 VCD (Value Change Dump) waveform viewer written in Rust, built for use on Linux and Termux (Android). No Electron, no browser, no GTK/Qt — just one dependency: `x11rb`.
 
-![screenshot placeholder](screenshot.png)
+![VCD Viewer](docs/screenshot.png)
 
 ## Features
 
