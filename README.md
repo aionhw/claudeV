@@ -2,7 +2,7 @@
 
 A native X11 VCD (Value Change Dump) waveform viewer written in Rust, built for use on Linux and Termux (Android). No Electron, no browser, no GTK/Qt — just one dependency: `x11rb`.
 
-![VCD Viewer](docs/screenshot.png)
+![screenshot placeholder](screenshot.png)
 
 ## Features
 
@@ -141,5 +141,7 @@ Focus cycles through the three panels with `Tab`. The active panel is highlighte
 - Multi-character signal identifiers
 - Multiple nested scopes
 - Tested against output from [sisvsim](https://github.com/your-org/sisvsim)
+
+## License
 
 

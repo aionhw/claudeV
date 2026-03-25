@@ -39,6 +39,15 @@ const C_LBL:        u32 = 0x8AFF9A;
 const C_DIM:        u32 = 0x2A5A2A;
 const C_BDR:        u32 = 0x0F2A0F;
 const C_BDR_FOCUS:  u32 = 0x00AA50;
+const C_SEP:        u32 = 0xFFFFFF; // white section separator
+const C_GRP_BG:     u32 = 0x080E10; // group header background
+const C_GRP_LBL:    u32 = 0x40C0E0; // group header label (cyan)
+const C_GRP_SEL:    u32 = 0x0C1C20; // group header selected
+const C_SPACER:     u32 = 0x0C120C; // spacer row background
+const C_COMP_BG:    u32 = 0x0A0A14; // computed signal name bg
+const C_COMP_LBL:   u32 = 0xA080FF; // computed signal label (purple)
+const C_COMP_SEL:   u32 = 0x141420; // computed signal selected bg
+const C_PENDING:    u32 = 0xFFAA00; // pending-op highlight
 const C_SEL_MOD:    u32 = 0x0A1A0A;
 const C_SEL_SIG:    u32 = 0x0C200C;
 const C_SEL_WAVE:   u32 = 0x142814;
@@ -74,11 +83,70 @@ struct ModNode {
     expanded: bool,
 }
 
-// ── Wave row ──────────────────────────────────────────────────────────────────
+// ── Pin item (persistent waveform list model) ────────────────────────────────
+#[derive(Clone, Debug)]
+enum PinItem {
+    Sig(usize),
+    Computed(usize),   // index into app.computed
+    Spacer,
+    Group { name: String, collapsed: bool, sigs: Vec<usize> },
+}
+impl PinItem {
+    fn is_sig(&self, si: usize) -> bool { matches!(self, PinItem::Sig(s) if *s == si) }
+    fn contains(&self, si: usize) -> bool {
+        match self {
+            PinItem::Sig(s)          => *s == si,
+            PinItem::Group{sigs,..}  => sigs.contains(&si),
+            PinItem::Spacer | PinItem::Computed(_) => false,
+        }
+    }
+}
+
+// ── Wave row (derived, for rendering) ─────────────────────────────────────────
 #[derive(Clone, Debug)]
 enum WaveRow {
-    Signal   { sig_idx: usize },
-    BitSlice { sig_idx: usize, bit: usize },
+    GroupHeader { name: String, collapsed: bool, pin_idx: usize },
+    Signal      { sig_idx: usize, pin_idx: usize, grp_idx: Option<usize> },
+    BitSlice    { sig_idx: usize, bit: usize },
+    Spacer      { pin_idx: usize },
+    Computed    { comp_idx: usize, pin_idx: usize },
+}
+
+// ── Computed signals ──────────────────────────────────────────────────────────
+#[derive(Clone, Debug, PartialEq)]
+enum BinOp  { And, Or, Xor, Nand, Nor, Xnor, ShiftL(u8), ShiftR(u8) }
+#[derive(Clone, Debug, PartialEq)]
+enum UnaryOp { Not, ShiftL(u8), ShiftR(u8) }
+
+#[derive(Clone, Debug)]
+enum CompOp {
+    Unary  { op: UnaryOp,  src: usize },           // src = wave_row index at creation
+    Binary { op: BinOp,    src_a: usize, src_b: usize },
+}
+
+#[derive(Clone, Debug)]
+struct Computed {
+    name:    String,
+    op:      CompOp,
+    width:   usize,
+    changes: Vec<vcd_parser::ValueChange>,
+}
+
+impl BinOp {
+    fn symbol(&self) -> &str {
+        match self { BinOp::And=>"&", BinOp::Or=>"|", BinOp::Xor=>"^",
+            BinOp::Nand=>"~&", BinOp::Nor=>"~|", BinOp::Xnor=>"~^",
+            BinOp::ShiftL(_)=>"<<", BinOp::ShiftR(_)=>">>" }
+    }
+}
+impl UnaryOp { fn symbol(&self) -> &str { match self { UnaryOp::Not=>"~", UnaryOp::ShiftL(_)=>"<<", UnaryOp::ShiftR(_)=>">>" } } }
+
+// ── Pending operation state ────────────────────────────────────────────────────
+#[derive(Clone, Debug)]
+enum Pending {
+    SelectOp  { src_row: usize, src_name: String }, // chose first signal, waiting for op
+    SelectB   { op: BinOp, src_a: usize, src_name: String }, // chose op, picking second signal
+    ShiftAmt  { unary: bool, src_row: usize, src_name: String, op_sym: String, amt: String }, // typing shift amount
 }
 
 // ── Focus ─────────────────────────────────────────────────────────────────────
@@ -103,11 +171,15 @@ struct App {
     sig_scroll:    usize,
 
     // Waveform
-    pinned:        Vec<usize>,
+    items:         Vec<PinItem>, // ordered waveform list
     wave_expanded: HashSet<usize>,
     wave_rows:     Vec<WaveRow>,
     wave_sel:      usize,
     wave_scroll:   usize,
+
+    // Computed signals
+    computed:  Vec<Computed>,
+    pending:   Option<Pending>,
 
     // View
     zoom:       f64,
@@ -124,7 +196,8 @@ impl App {
             mod_nodes: HashMap::new(), mod_roots: Vec::new(),
             mod_rows: Vec::new(), mod_sel: 0, mod_scroll: 0,
             sig_rows: Vec::new(), sig_sel: 0, sig_scroll: 0,
-            pinned: Vec::new(), wave_expanded: HashSet::new(),
+            items: Vec::new(), wave_expanded: HashSet::new(),
+            computed: Vec::new(), pending: None,
             wave_rows: Vec::new(), wave_sel: 0, wave_scroll: 0,
             zoom: 1.0, view_start: 0.0, cursor: None,
             focus: Focus::ModTree,
@@ -163,7 +236,8 @@ impl App {
                 self.sig_sel = 0; self.sig_scroll = 0;
                 self.wave_sel = 0; self.wave_scroll = 0;
                 self.wave_expanded.clear();
-                self.pinned = (0..data.signals.len()).collect(); // pin all by default
+                self.items  = (0..data.signals.len()).map(PinItem::Sig).collect();
+                self.computed.clear();
                 self.build_mod_tree(&data);
                 self.vcd = Some(data);
                 self.rebuild_mod_rows();
@@ -265,14 +339,25 @@ impl App {
     }
 
     // ── Pinning ───────────────────────────────────────────────────────────────
-    fn is_pinned(&self, si: usize) -> bool { self.pinned.contains(&si) }
+    fn is_pinned(&self, si: usize) -> bool { self.items.iter().any(|it| it.contains(si)) }
+
+    fn pin_count(&self) -> usize {
+        self.items.iter().map(|it| match it {
+            PinItem::Sig(_) | PinItem::Computed(_) => 1,
+            PinItem::Group{sigs,..}  => sigs.len(),
+            PinItem::Spacer          => 0,
+        }).sum()
+    }
 
     fn pin(&mut self, si: usize) {
-        if !self.is_pinned(si) { self.pinned.push(si); self.rebuild_wave(); }
+        if !self.is_pinned(si) { self.items.push(PinItem::Sig(si)); self.rebuild_wave(); }
     }
 
     fn unpin(&mut self, si: usize) {
-        self.pinned.retain(|&s| s != si);
+        self.items.retain(|it| !it.is_sig(si));
+        for it in &mut self.items {
+            if let PinItem::Group { sigs, .. } = it { sigs.retain(|&s| s != si); }
+        }
         self.wave_expanded.remove(&si);
         self.rebuild_wave();
     }
@@ -290,7 +375,7 @@ impl App {
                 sp == scope || sp.starts_with(&format!("{}.", scope))
             })
             .map(|(i, _)| i).collect();
-        for si in to_add { if !self.is_pinned(si) { self.pinned.push(si); } }
+        for si in to_add { if !self.is_pinned(si) { self.items.push(PinItem::Sig(si)); } }
         self.rebuild_wave();
     }
 
@@ -298,15 +383,87 @@ impl App {
     fn rebuild_wave(&mut self) {
         let Some(vcd) = &self.vcd else { self.wave_rows.clear(); return };
         self.wave_rows.clear();
-        for &si in &self.pinned {
-            self.wave_rows.push(WaveRow::Signal { sig_idx: si });
-            if self.wave_expanded.contains(&si) {
-                for bit in (0..vcd.signals[si].width).rev() {
-                    self.wave_rows.push(WaveRow::BitSlice { sig_idx: si, bit });
+        for (pi, item) in self.items.iter().enumerate() {
+            match item {
+                PinItem::Computed(ci) => {
+                    self.wave_rows.push(WaveRow::Computed { comp_idx: *ci, pin_idx: pi });
+                }
+                PinItem::Spacer => {
+                    self.wave_rows.push(WaveRow::Spacer { pin_idx: pi });
+                }
+                PinItem::Sig(si) => {
+                    let si = *si;
+                    self.wave_rows.push(WaveRow::Signal { sig_idx: si, pin_idx: pi, grp_idx: None });
+                    if self.wave_expanded.contains(&si) {
+                        for bit in (0..vcd.signals[si].width).rev() {
+                            self.wave_rows.push(WaveRow::BitSlice { sig_idx: si, bit });
+                        }
+                    }
+                }
+                PinItem::Group { name, collapsed, sigs } => {
+                    self.wave_rows.push(WaveRow::GroupHeader {
+                        name: name.clone(), collapsed: *collapsed, pin_idx: pi,
+                    });
+                    if !collapsed {
+                        for (gi, &si) in sigs.iter().enumerate() {
+                            self.wave_rows.push(WaveRow::Signal { sig_idx: si, pin_idx: pi, grp_idx: Some(gi) });
+                            if self.wave_expanded.contains(&si) {
+                                for bit in (0..vcd.signals[si].width).rev() {
+                                    self.wave_rows.push(WaveRow::BitSlice { sig_idx: si, bit });
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
         self.wave_sel = self.wave_sel.min(self.wave_rows.len().saturating_sub(1));
+    }
+
+    // ── Group & spacer helpers ─────────────────────────────────────────────────
+    fn insert_spacer(&mut self) {
+        let pos = self.wave_insert_pos();
+        self.items.insert(pos, PinItem::Spacer);
+        self.rebuild_wave();
+        self.wave_sel = (self.wave_sel + 1).min(self.wave_rows.len().saturating_sub(1));
+    }
+
+    fn wave_insert_pos(&self) -> usize {
+        match self.wave_rows.get(self.wave_sel) {
+            Some(WaveRow::Signal   { pin_idx, grp_idx: None, .. }) => pin_idx + 1,
+            Some(WaveRow::GroupHeader { pin_idx, .. })             => pin_idx + 1,
+            Some(WaveRow::Spacer   { pin_idx })                    => pin_idx + 1,
+            _ => self.items.len(),
+        }
+    }
+
+    fn create_group(&mut self, name: String) {
+        match self.wave_rows.get(self.wave_sel).cloned() {
+            Some(WaveRow::Signal { sig_idx, pin_idx, grp_idx: None }) => {
+                self.items.remove(pin_idx);
+                self.items.insert(pin_idx, PinItem::Group { name, collapsed: false, sigs: vec![sig_idx] });
+                self.rebuild_wave();
+            }
+            _ => {
+                let pos = self.wave_insert_pos();
+                self.items.insert(pos, PinItem::Group { name, collapsed: false, sigs: vec![] });
+                self.rebuild_wave();
+            }
+        }
+    }
+
+    fn move_to_group(&mut self) {
+        let (si, pi) = match self.wave_rows.get(self.wave_sel) {
+            Some(WaveRow::Signal { sig_idx, pin_idx, grp_idx: None }) => (*sig_idx, *pin_idx),
+            _ => { self.status = "Select a top-level signal to move into a group".into(); return; }
+        };
+        let grp_pi = (0..pi).rev().find(|&i| matches!(self.items.get(i), Some(PinItem::Group{..})));
+        let Some(grp_pi) = grp_pi else {
+            self.status = "No group above — press 'g' to create one first".into(); return;
+        };
+        self.items.remove(pi);
+        if let Some(PinItem::Group { sigs, .. }) = self.items.get_mut(grp_pi) { sigs.push(si); }
+        self.rebuild_wave();
     }
 
     // ── Scroll helpers ────────────────────────────────────────────────────────
@@ -336,9 +493,9 @@ impl App {
     fn jump_edge(&mut self, fwd: bool) {
         let (Some(vcd), Some(cursor)) = (&self.vcd, self.cursor) else { return };
         let si = match self.wave_rows.get(self.wave_sel) {
-            Some(WaveRow::Signal   { sig_idx }) |
+            Some(WaveRow::Signal   { sig_idx, .. }) |
             Some(WaveRow::BitSlice { sig_idx, .. }) => *sig_idx,
-            None => return,
+            _ => return,
         };
         let Some(changes) = vcd.changes.get(&vcd.signals[si].id) else { return };
         let t = cursor as u64;
@@ -394,10 +551,15 @@ impl App {
             0x6E => { self.jump_edge(true);  return false; }
             0x4E => { self.jump_edge(false); return false; }
             0x3F => {
-                self.status = "Tab=cycle panels | MOD: j/k=nav Enter=expand/collapse A=add all | SIG: j/k=nav a=add/remove A=add all | WAVE: j/k J/K=reorder d/Del=remove e=expand | +/-/f=zoom h/l=pan c=cursor n/N=edge q=quit".into();
+                self.status = "Tab=panels | MOD: j/k Enter=expand A=add-scope | SIG: j/k a=add/remove A=add-scope | WAVE: j/k=nav J/K=reorder d=remove e=expand  g=group i=spacer m=move-to-group Enter=toggle-group | +/-/f=zoom h/l c=cursor n/N q".into();
                 return false;
             }
             _ => {}
+        }
+        // If a pending operation is active, route keys there first
+        if self.pending.is_some() && self.focus == Focus::Wave {
+            self.key_pending(ks, win_h);
+            return false;
         }
         match self.focus {
             Focus::ModTree => self.key_mod(ks, win_h),
@@ -493,37 +655,92 @@ impl App {
             // d / Del / Backspace — remove
             k if k == 0x64 || k == XK_DELETE || k == XK_BACKSPACE => {
                 match self.wave_rows.get(self.wave_sel).cloned() {
-                    Some(WaveRow::Signal { sig_idx }) => { self.unpin(sig_idx); self.wave_sel = self.wave_sel.min(self.wave_rows.len().saturating_sub(1)); }
-                    Some(WaveRow::BitSlice { sig_idx, .. }) => { self.wave_expanded.remove(&sig_idx); self.rebuild_wave(); self.wave_sel = self.wave_sel.min(self.wave_rows.len().saturating_sub(1)); }
+                    Some(WaveRow::Signal { sig_idx, .. }) => {
+                        self.unpin(sig_idx);
+                        self.wave_sel = self.wave_sel.min(self.wave_rows.len().saturating_sub(1));
+                    }
+                    Some(WaveRow::BitSlice { sig_idx, .. }) => {
+                        self.wave_expanded.remove(&sig_idx); self.rebuild_wave();
+                        self.wave_sel = self.wave_sel.min(self.wave_rows.len().saturating_sub(1));
+                    }
+                    Some(WaveRow::GroupHeader { pin_idx, .. }) => {
+                        // Dissolve group — promote signals to top-level
+                        if let Some(PinItem::Group { sigs, .. }) = self.items.get(pin_idx).cloned() {
+                            self.items.remove(pin_idx);
+                            for (i, si) in sigs.into_iter().enumerate() {
+                                self.items.insert(pin_idx + i, PinItem::Sig(si));
+                            }
+                        }
+                        self.rebuild_wave();
+                        self.wave_sel = self.wave_sel.min(self.wave_rows.len().saturating_sub(1));
+                    }
+                    Some(WaveRow::Computed { pin_idx, .. }) => {
+                        self.items.remove(pin_idx);
+                        self.rebuild_wave();
+                        self.wave_sel = self.wave_sel.min(self.wave_rows.len().saturating_sub(1));
+                    }
+                    Some(WaveRow::Spacer { pin_idx }) => {
+                        self.items.remove(pin_idx);
+                        self.rebuild_wave();
+                        self.wave_sel = self.wave_sel.min(self.wave_rows.len().saturating_sub(1));
+                    }
                     None => {}
                 }
             }
             // J — move down
             0x4A => {
-                if let Some(WaveRow::Signal { sig_idx }) = self.wave_rows.get(self.wave_sel).cloned() {
-                    if let Some(pos) = self.pinned.iter().position(|&s| s == sig_idx) {
-                        if pos + 1 < self.pinned.len() {
-                            self.pinned.swap(pos, pos+1); self.rebuild_wave();
-                            if let Some(p) = self.wave_rows.iter().position(|r| matches!(r, WaveRow::Signal{sig_idx:s} if *s==sig_idx)) { self.wave_sel = p; }
+                match self.wave_rows.get(self.wave_sel).cloned() {
+                    Some(WaveRow::Signal { sig_idx, pin_idx, grp_idx: None }) => {
+                        if pin_idx + 1 < self.items.len() {
+                            self.items.swap(pin_idx, pin_idx+1); self.rebuild_wave();
+                            if let Some(p) = self.wave_rows.iter().position(|r| matches!(r, WaveRow::Signal{sig_idx:s,grp_idx:None,..} if *s==sig_idx)) { self.wave_sel = p; }
                         }
                     }
+                    Some(WaveRow::Signal { sig_idx, pin_idx, grp_idx: Some(gi) }) => {
+                        if let Some(PinItem::Group{sigs,..}) = self.items.get_mut(pin_idx) {
+                            if gi + 1 < sigs.len() { sigs.swap(gi, gi+1); self.rebuild_wave();
+                                if let Some(p) = self.wave_rows.iter().position(|r| matches!(r, WaveRow::Signal{sig_idx:s,..} if *s==sig_idx)) { self.wave_sel = p; }
+                            }
+                        }
+                    }
+                    Some(WaveRow::GroupHeader { pin_idx, .. }) => {
+                        if pin_idx + 1 < self.items.len() {
+                            self.items.swap(pin_idx, pin_idx+1); self.rebuild_wave();
+                            self.wave_sel = self.wave_sel.min(self.wave_rows.len().saturating_sub(1));
+                        }
+                    }
+                    _ => {}
                 }
             }
             // K — move up
             0x4B => {
-                if let Some(WaveRow::Signal { sig_idx }) = self.wave_rows.get(self.wave_sel).cloned() {
-                    if let Some(pos) = self.pinned.iter().position(|&s| s == sig_idx) {
-                        if pos > 0 {
-                            self.pinned.swap(pos, pos-1); self.rebuild_wave();
-                            if let Some(p) = self.wave_rows.iter().position(|r| matches!(r, WaveRow::Signal{sig_idx:s} if *s==sig_idx)) { self.wave_sel = p; }
+                match self.wave_rows.get(self.wave_sel).cloned() {
+                    Some(WaveRow::Signal { sig_idx, pin_idx, grp_idx: None }) => {
+                        if pin_idx > 0 {
+                            self.items.swap(pin_idx, pin_idx-1); self.rebuild_wave();
+                            if let Some(p) = self.wave_rows.iter().position(|r| matches!(r, WaveRow::Signal{sig_idx:s,grp_idx:None,..} if *s==sig_idx)) { self.wave_sel = p; }
                         }
                     }
+                    Some(WaveRow::Signal { sig_idx, pin_idx, grp_idx: Some(gi) }) => {
+                        if let Some(PinItem::Group{sigs,..}) = self.items.get_mut(pin_idx) {
+                            if gi > 0 { sigs.swap(gi, gi-1); self.rebuild_wave();
+                                if let Some(p) = self.wave_rows.iter().position(|r| matches!(r, WaveRow::Signal{sig_idx:s,..} if *s==sig_idx)) { self.wave_sel = p; }
+                            }
+                        }
+                    }
+                    Some(WaveRow::GroupHeader { pin_idx, .. }) => {
+                        if pin_idx > 0 {
+                            self.items.swap(pin_idx, pin_idx-1); self.rebuild_wave();
+                            self.wave_sel = self.wave_sel.saturating_sub(1);
+                        }
+                    }
+                    _ => {}
                 }
             }
-            // e / Enter — expand bus
+            // e / Enter — expand bus OR collapse/expand group
             k if k == XK_RETURN || k == 0x65 || k == 0x45 => {
                 match self.wave_rows.get(self.wave_sel).cloned() {
-                    Some(WaveRow::Signal { sig_idx }) => {
+                    Some(WaveRow::Signal { sig_idx, .. }) => {
                         if let Some(vcd) = &self.vcd {
                             if vcd.signals[sig_idx].width > 1 {
                                 if self.wave_expanded.contains(&sig_idx) { self.wave_expanded.remove(&sig_idx); }
@@ -533,19 +750,223 @@ impl App {
                         }
                     }
                     Some(WaveRow::BitSlice { sig_idx, .. }) => { self.wave_expanded.remove(&sig_idx); self.rebuild_wave(); }
-                    None => {}
+                    Some(WaveRow::GroupHeader { pin_idx, collapsed, .. }) => {
+                        if let Some(PinItem::Group { collapsed: c, .. }) = self.items.get_mut(pin_idx) { *c = !collapsed; }
+                        self.rebuild_wave();
+                    }
+                    _ => {}
+                }
+            }
+            // i — insert spacer
+            0x69 => { self.insert_spacer(); self.status = "Spacer inserted  (d to remove)".into(); }
+            // g — create/wrap group
+            0x67 => { self.create_group("Group".into()); self.status = "Group created  (Enter=collapse  d=dissolve  m=add signal)".into(); }
+            // m — move signal into nearest group above
+            0x6D => { self.move_to_group(); }
+            // o — start operation on selected signal
+            0x6F => {
+                match self.wave_rows.get(self.wave_sel).cloned() {
+                    Some(WaveRow::Signal{..}) | Some(WaveRow::Computed{..}) => {
+                        let src_row  = self.wave_sel;
+                        let src_name = self.row_short_name(src_row);
+                        self.status = format!("Op on '{}'  →  &=AND  |=OR  ^=XOR  ~=NOT  !=NAND  %=NOR  @=XNOR  <=SHL  >=SHR  Esc=cancel", src_name);
+                        self.pending = Some(Pending::SelectOp { src_row, src_name });
+                    }
+                    _ => { self.status = "Select a signal first, then press 'o'".into(); }
                 }
             }
             _ => {
-                // Show path
-                if let Some(vcd) = &self.vcd {
-                    let s = match self.wave_rows.get(self.wave_sel) {
-                        Some(WaveRow::Signal{sig_idx})       => vcd.signals[*sig_idx].full_name.clone(),
-                        Some(WaveRow::BitSlice{sig_idx,bit}) => format!("{}[{}]", vcd.signals[*sig_idx].full_name, bit),
-                        None => String::new(),
-                    };
-                    if !s.is_empty() { self.status = format!("◆ {}", s); }
+                let s = match self.wave_rows.get(self.wave_sel) {
+                    Some(WaveRow::Signal{sig_idx,..}) =>
+                        self.vcd.as_ref().map(|v| v.signals[*sig_idx].full_name.clone()).unwrap_or_default(),
+                    Some(WaveRow::BitSlice{sig_idx,bit,..}) =>
+                        self.vcd.as_ref().map(|v| format!("{}[{}]", v.signals[*sig_idx].full_name, bit)).unwrap_or_default(),
+                    Some(WaveRow::Computed{comp_idx,..}) => format!("= {}", self.computed[*comp_idx].name),
+                    Some(WaveRow::GroupHeader{name,..}) => format!("▣ Group: {}", name),
+                    Some(WaveRow::Spacer{..}) => "— spacer  (d=remove  i=add another)".into(),
+                    None => String::new(),
+                };
+                if !s.is_empty() { self.status = s; }
+            }
+        }
+    }
+
+    // ── Computed signal engine ────────────────────────────────────────────────
+    fn sig_changes_for_row(&self, row_idx: usize) -> (Vec<vcd_parser::ValueChange>, usize) {
+        match self.wave_rows.get(row_idx) {
+            Some(WaveRow::Signal { sig_idx, .. }) => {
+                let vcd = self.vcd.as_ref().unwrap();
+                let sig = &vcd.signals[*sig_idx];
+                (vcd.changes.get(&sig.id).cloned().unwrap_or_default(), sig.width)
+            }
+            Some(WaveRow::Computed { comp_idx, .. }) => {
+                let c = &self.computed[*comp_idx];
+                (c.changes.clone(), c.width)
+            }
+            _ => (vec![], 1),
+        }
+    }
+
+    fn compute_unary(op: &UnaryOp, src: &[vcd_parser::ValueChange], width: usize) -> Vec<vcd_parser::ValueChange> {
+        src.iter().map(|vc| {
+            let v = val_to_u64(&vc.value, width);
+            let result = match op {
+                UnaryOp::Not       => !v & ((1u64.wrapping_shl(width as u32)).wrapping_sub(1)),
+                UnaryOp::ShiftL(n) => (v << n) & ((1u64.wrapping_shl(width as u32)).wrapping_sub(1)),
+                UnaryOp::ShiftR(n) => v >> n,
+            };
+            vcd_parser::ValueChange { time: vc.time, value: u64_to_bin(result, width) }
+        }).collect()
+    }
+
+    fn compute_binary(op: &BinOp, a: &[vcd_parser::ValueChange], b: &[vcd_parser::ValueChange], width: usize) -> Vec<vcd_parser::ValueChange> {
+        // Merge all timestamps
+        let mut times: Vec<u64> = a.iter().map(|v| v.time).chain(b.iter().map(|v| v.time)).collect();
+        times.sort_unstable(); times.dedup();
+        times.into_iter().map(|t| {
+            let av = val_from_changes(a, t, width);
+            let bv = val_from_changes(b, t, width);
+            let mask = (1u64.wrapping_shl(width as u32)).wrapping_sub(1);
+            let r = match op {
+                BinOp::And  => av & bv,  BinOp::Or   => av | bv,
+                BinOp::Xor  => av ^ bv,  BinOp::Nand => !(av & bv) & mask,
+                BinOp::Nor  => !(av | bv) & mask, BinOp::Xnor => !(av ^ bv) & mask,
+                BinOp::ShiftL(n) => (av << n) & mask,
+                BinOp::ShiftR(n) => av >> n,
+            };
+            vcd_parser::ValueChange { time: t, value: u64_to_bin(r, width) }
+        }).collect()
+    }
+
+    fn create_computed_unary(&mut self, op: UnaryOp, src_row: usize) {
+        let (src_ch, width) = self.sig_changes_for_row(src_row);
+        let src_name = self.row_short_name(src_row);
+        let name = format!("{}({})", op.symbol(), src_name);
+        let changes = Self::compute_unary(&op, &src_ch, width);
+        let ci = self.computed.len();
+        self.computed.push(Computed { name, op: CompOp::Unary { op, src: src_row }, width, changes });
+        self.items.push(PinItem::Computed(ci));
+        self.rebuild_wave();
+        self.status = format!("Created computed signal #{}", ci);
+    }
+
+    fn create_computed_binary(&mut self, op: BinOp, src_a: usize, src_b: usize) {
+        let (a_ch, wa) = self.sig_changes_for_row(src_a);
+        let (b_ch, wb) = self.sig_changes_for_row(src_b);
+        let width = wa.max(wb);
+        let a_name = self.row_short_name(src_a);
+        let b_name = self.row_short_name(src_b);
+        let name = format!("({} {} {})", a_name, op.symbol(), b_name);
+        let changes = Self::compute_binary(&op, &a_ch, &b_ch, width);
+        let ci = self.computed.len();
+        self.computed.push(Computed { name, op: CompOp::Binary { op, src_a, src_b }, width, changes });
+        self.items.push(PinItem::Computed(ci));
+        self.rebuild_wave();
+        self.status = format!("Created computed signal #{}", ci);
+    }
+
+    fn row_short_name(&self, row_idx: usize) -> String {
+        match self.wave_rows.get(row_idx) {
+            Some(WaveRow::Signal { sig_idx, .. }) =>
+                self.vcd.as_ref().map(|v| v.signals[*sig_idx].name.clone()).unwrap_or_default(),
+            Some(WaveRow::Computed { comp_idx, .. }) =>
+                self.computed[*comp_idx].name.clone(),
+            _ => format!("row{}", row_idx),
+        }
+    }
+
+    // ── Pending operation key handler ─────────────────────────────────────────
+    fn key_pending(&mut self, ks: u32, win_h: i16) -> bool {
+        let pending = match self.pending.take() { Some(p) => p, None => return false };
+
+        if ks == XK_ESCAPE { self.status = "Cancelled".into(); return true; }
+
+        match pending {
+            Pending::SelectOp { src_row, src_name } => {
+                let op: Option<BinOp> = match ks {
+                    0x26 => Some(BinOp::And),   // &
+                    0x7C => Some(BinOp::Or),    // |
+                    0x5E => Some(BinOp::Xor),   // ^
+                    0x21 => Some(BinOp::Nand),  // !  (nand shorthand)
+                    0x25 => Some(BinOp::Nor),   // %  (nor shorthand)
+                    0x40 => Some(BinOp::Xnor),  // @  (xnor shorthand)
+                    _ => None,
+                };
+                if let Some(op) = op {
+                    let sym = op.symbol().to_string();
+                    self.status = format!("Op: {}  |  Navigate j/k to second signal, Enter to confirm, Esc=cancel", sym);
+                    self.pending = Some(Pending::SelectB { op, src_a: src_row, src_name });
+                    return true;
                 }
+                // Unary ops
+                match ks {
+                    0x7E => { // ~ NOT
+                        self.create_computed_unary(UnaryOp::Not, src_row); return true;
+                    }
+                    0x3C => { // < start shift-left entry
+                        self.status = "Shift left by: type amount (0-63) then Enter".into();
+                        self.pending = Some(Pending::ShiftAmt { unary: true, src_row, src_name, op_sym: "<<".into(), amt: String::new() });
+                        return true;
+                    }
+                    0x3E => { // > start shift-right entry
+                        self.status = "Shift right by: type amount (0-63) then Enter".into();
+                        self.pending = Some(Pending::ShiftAmt { unary: true, src_row, src_name, op_sym: ">>".into(), amt: String::new() });
+                        return true;
+                    }
+                    _ => {
+                        self.status = format!("Unknown op (Esc=cancel)  &=AND  |=OR  ^=XOR  ~=NOT  !=NAND  %=NOR  @=XNOR  <=SHL  >=SHR");
+                        self.pending = Some(Pending::SelectOp { src_row, src_name });
+                        return true;
+                    }
+                }
+            }
+            Pending::SelectB { op, src_a, src_name } => {
+                // navigation still works normally; Enter confirms
+                let vr = self.wave_vis_rows(win_h);
+                let n  = self.wave_rows.len();
+                match ks {
+                    k if k == XK_UP   || k == 0x6B => { if self.wave_sel > 0 { self.wave_sel -= 1; } self.scroll_wave(win_h); }
+                    k if k == XK_DOWN || k == 0x6A => { if n>0&&self.wave_sel+1<n{self.wave_sel+=1;} self.scroll_wave(win_h); }
+                    k if k == XK_PAGE_UP   => { self.wave_sel = self.wave_sel.saturating_sub(vr); self.scroll_wave(win_h); }
+                    k if k == XK_PAGE_DOWN => { self.wave_sel = (self.wave_sel+vr).min(n.saturating_sub(1)); self.scroll_wave(win_h); }
+                    k if k == XK_RETURN => {
+                        let src_b = self.wave_sel;
+                        self.create_computed_binary(op, src_a, src_b);
+                        return true;
+                    }
+                    _ => {}
+                }
+                let b_name = self.row_short_name(self.wave_sel);
+                self.status = format!("({} {} ?)  →  navigate to second signal, Enter to confirm  |  current: {}",
+                    src_name, op.symbol(), b_name);
+                self.pending = Some(Pending::SelectB { op, src_a, src_name });
+                return true;
+            }
+            Pending::ShiftAmt { unary, src_row, src_name, op_sym, mut amt } => {
+                match ks {
+                    k if k == XK_RETURN => {
+                        let n: u8 = amt.parse().unwrap_or(1).min(63);
+                        let is_left = op_sym == "<<";
+                        if unary {
+                            let op = if is_left { UnaryOp::ShiftL(n) } else { UnaryOp::ShiftR(n) };
+                            self.create_computed_unary(op, src_row);
+                        } else {
+                            let op = if is_left { BinOp::ShiftL(n) } else { BinOp::ShiftR(n) };
+                            // No: shift-as-binary doesn't make sense, treat as unary
+                            self.create_computed_unary(if is_left { UnaryOp::ShiftL(n) } else { UnaryOp::ShiftR(n) }, src_row);
+                        }
+                        return true;
+                    }
+                    k if k == XK_BACKSPACE => { amt.pop(); }
+                    // digit keys 0-9
+                    k if k >= 0x30 && k <= 0x39 => {
+                        if amt.len() < 2 { amt.push((k as u8 - 0x30 + b'0') as char); }
+                    }
+                    _ => {}
+                }
+                self.status = format!("{} {} {} — type amount (Enter to confirm, Esc=cancel)", src_name, op_sym, amt);
+                self.pending = Some(Pending::ShiftAmt { unary, src_row, src_name, op_sym, amt });
+                return true;
             }
         }
     }
@@ -562,6 +983,25 @@ impl App {
             _ => {}
         }
     }
+}
+
+// ── Value arithmetic helpers ─────────────────────────────────────────────────
+
+fn val_to_u64(val: &str, width: usize) -> u64 {
+    if val.chars().any(|c| c=='x'||c=='X'||c=='z'||c=='Z') { return 0; }
+    u64::from_str_radix(val, 2).unwrap_or(0)
+}
+
+fn u64_to_bin(v: u64, width: usize) -> String {
+    if width == 0 { return "0".into(); }
+    let w = width.min(64);
+    (0..w).rev().map(|i| if (v >> i) & 1 == 1 { '1' } else { '0' }).collect()
+}
+
+fn val_from_changes(changes: &[vcd_parser::ValueChange], time: u64, width: usize) -> u64 {
+    let idx = changes.partition_point(|vc| vc.time <= time);
+    if idx == 0 { return 0; }
+    val_to_u64(&changes[idx-1].value, width)
 }
 
 // ── X11 primitives ────────────────────────────────────────────────────────────
@@ -627,14 +1067,16 @@ fn render(conn: &RustConnection, pix: u32, gc: u32, font: u32, w: u16, h: u16, a
     let hdr = if let Some(vcd) = &app.vcd {
         let cur = app.cursor.map(|t| format!("  T={:.0}{}", t, vcd.timescale)).unwrap_or_default();
         format!(" VCD  {}  z={:.1}x  {:.0}..{:.0}{}  pinned={}",
-            app.filename, app.zoom, app.view_start, app.view_end(), cur, app.pinned.len())
+            app.filename, app.zoom, app.view_start, app.view_end(), cur, app.pin_count())
     } else {
         " VCD VIEWER — s=sample  Tab=cycle panels  q=quit  ?=help".into()
     };
     txt(conn, pix, gc, font, C_HI, C_HEADER, 2, 4, &hdr);
+    seg(conn, pix, gc, C_SEP, 0, HEADER_H-1, w, HEADER_H-1); // header separator
 
     // Status
     let sy = h - STATUS_H;
+    seg(conn, pix, gc, C_SEP, 0, sy, w, sy);              // status separator
     fill(conn, pix, gc, C_HEADER, 0, sy, w as u16, STATUS_H as u16);
     let (fl, fc) = match app.focus {
         Focus::ModTree => (" MODULE ", C_MOD_SEL),
@@ -656,10 +1098,10 @@ fn render(conn: &RustConnection, pix: u32, gc: u32, font: u32, w: u16, h: u16, a
     // Divider between module tree and signal list
     let bdl = if app.focus == Focus::ModTree { C_BDR_FOCUS } else { C_BDR };
     let bds = if app.focus == Focus::SigList { C_BDR_FOCUS } else { C_BDR };
-    seg(conn, pix, gc, C_BDR, 0, sig_y, LEFT_W, sig_y);
+    seg(conn, pix, gc, C_SEP, 0, sig_y, LEFT_W, sig_y);  // module/signal list separator
     // Right edge of left panel
     let bdr = if app.focus != Focus::Wave { C_BDR_FOCUS } else { C_BDR };
-    seg(conn, pix, gc, bdr, LEFT_W, HEADER_H, LEFT_W, h - STATUS_H);
+    seg(conn, pix, gc, C_SEP, LEFT_W, HEADER_H, LEFT_W, h - STATUS_H); // panel/wave separator
 
     // ── Module tree ───────────────────────────────────────────────────────────
     // Header bar
@@ -744,7 +1186,7 @@ fn render(conn: &RustConnection, pix: u32, gc: u32, font: u32, w: u16, h: u16, a
 
     // Name column divider
     let wbdr = if app.focus == Focus::Wave { C_BDR_FOCUS } else { C_BDR };
-    seg(conn, pix, gc, wbdr, wave_x, HEADER_H, wave_x, h-STATUS_H);
+    seg(conn, pix, gc, C_SEP, wave_x, HEADER_H, wave_x, h-STATUS_H); // name/wave separator
 
     // Ruler
     render_ruler(conn, pix, gc, font, wave_x, HEADER_H, wave_w,
@@ -771,13 +1213,61 @@ fn render(conn: &RustConnection, pix: u32, gc: u32, font: u32, w: u16, h: u16, a
         let wbg    = if ri%2==0 { C_BG } else { C_WAVE_ALT };
 
         match row {
-            WaveRow::Signal { sig_idx } => {
+            WaveRow::Computed { comp_idx, .. } => {
+                let comp = &app.computed[*comp_idx];
+                let nbg  = if is_sel && app.focus==Focus::Wave { C_COMP_SEL } else { C_COMP_BG };
+                fill(conn, pix, gc, nbg, wx, ry, NAME_W as u16, WAVE_H as u16);
+                // Full expression (top)
+                let max_c = ((NAME_W-8)/FW).max(0) as usize;
+                txt(conn, pix, gc, font, C_COMP_LBL, nbg, wx+4, ry+2, &trunc_r(&comp.name, max_c));
+                // Width (bottom right)
+                let wstr = format!("[{}:0]", comp.width-1);
+                txt(conn, pix, gc, font, C_DIM, nbg, wx+4, ry+WAVE_H/2, &trunc_r(&wstr, max_c));
+                // Cursor value
+                if let Some(t) = app.cursor {
+                    let v = val_from_changes(&comp.changes, t as u64, comp.width);
+                    let dv = if comp.width==1 { format!("{}", v) } else { format!("{:#X}", v) };
+                    let vx = wx + NAME_W - 2 - tw(&dv);
+                    if vx > wx+4 { txt(conn, pix, gc, font, C_CUR, nbg, vx, ry+WAVE_H/2, &dv); }
+                }
+                if is_sel { seg(conn, pix, gc, C_COMP_LBL, wx, ry, wx, ry+WAVE_H-1); }
+                // Waveform
+                fill(conn, pix, gc, wbg, wave_x, ry, wave_w as u16, WAVE_H as u16);
+                if is_sel { fill(conn, pix, gc, if app.focus==Focus::Wave{C_COMP_LBL}else{C_DIM}, wave_x, ry, 2, WAVE_H as u16); }
+                render_wave(conn, pix, gc, font, wave_x, ry, wave_w, &comp.changes, comp.width,
+                    app.view_start, app.view_end(), app.cursor, wbg);
+                seg(conn, pix, gc, C_BDR, wx, ry+WAVE_H-1, w, ry+WAVE_H-1);
+                continue;
+            }
+            WaveRow::GroupHeader { name, collapsed, .. } => {
+                let bg = if is_sel { C_GRP_SEL } else { C_GRP_BG };
+                fill(conn, pix, gc, bg, wx, ry, (NAME_W + wave_w) as u16, WAVE_H as u16);
+                let marker = if *collapsed { "▶ " } else { "▼ " };
+                let lbl    = format!("{}{}", marker, name);
+                let max_c  = ((NAME_W + wave_w - 8) / FW).max(0) as usize;
+                txt(conn, pix, gc, font, C_GRP_LBL, bg, wx + 6, ry + (WAVE_H-13)/2, &trunc_r(&lbl, max_c));
+                if is_sel { seg(conn, pix, gc, C_GRP_LBL, wx, ry, wx, ry+WAVE_H-1); }
+                seg(conn, pix, gc, C_SEP, wx, ry+WAVE_H-1, wx+NAME_W+wave_w, ry+WAVE_H-1);
+                continue;
+            }
+            WaveRow::Spacer { .. } => {
+                fill(conn, pix, gc, C_SPACER, wx, ry, (NAME_W + wave_w) as u16, WAVE_H as u16);
+                dashed(conn, pix, gc, C_DIM, wx, ry + WAVE_H/2, wx + NAME_W + wave_w);
+                if is_sel {
+                    seg(conn, pix, gc, C_GRP_LBL, wx, ry, wx+NAME_W+wave_w, ry);
+                    seg(conn, pix, gc, C_GRP_LBL, wx, ry+WAVE_H-1, wx+NAME_W+wave_w, ry+WAVE_H-1);
+                }
+                continue;
+            }
+            WaveRow::Signal { sig_idx, grp_idx, .. } => {
+                let in_group = grp_idx.is_some();
                 let si  = *sig_idx;
                 let sig = &vcd.signals[si];
 
                 // Name column
                 let nbg = if is_sel && app.focus==Focus::Wave { C_SEL_WAVE } else { C_PANEL };
                 fill(conn, pix, gc, nbg, wx, ry, NAME_W as u16, WAVE_H as u16);
+                if in_group { fill(conn, pix, gc, C_GRP_LBL, wx, ry, 3, WAVE_H as u16); }
 
                 // Full path (top, dim, small)
                 let max_c   = ((NAME_W - 8) / FW).max(0) as usize;
@@ -869,7 +1359,7 @@ fn render_ruler(conn: &RustConnection, pix: u32, gc: u32, font: u32,
     if let Some(ct) = cursor {
         if ct >= t0 && ct <= t1 { fill(conn, pix, gc, C_CUR, to_x(ct)-1, y, 3, RULER_H as u16); }
     }
-    seg(conn, pix, gc, C_BDR, x, y+RULER_H-1, x+w, y+RULER_H-1);
+    seg(conn, pix, gc, C_SEP, x, y+RULER_H-1, x+w, y+RULER_H-1); // ruler separator
 }
 
 // ── Wave renderer ─────────────────────────────────────────────────────────────
