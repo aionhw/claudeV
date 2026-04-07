@@ -78,4 +78,4 @@ Top `File` menu actions:
 
 ## Documentation
 
-For full keyboard/mouse controls, workflow, and troubleshooting, see [USER_GUIDE.md](./USER_GUIDE.md).
+For full keyboard/mouse controls, workflow, and troubleshooting, see [USERGUIDE.txt](./docs/USERGUIDE.txt).
