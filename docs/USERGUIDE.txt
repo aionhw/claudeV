@@ -1,470 +1,181 @@
-╔══════════════════════════════════════════════════════════════════════════════╗
-║                        claudeV — VCD Waveform Viewer                        ║
-║                              User Guide v0.1                                ║
-╚══════════════════════════════════════════════════════════════════════════════╝
+# claudeV User Guide
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-QUICK START
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+`claudeV` is a native X11 waveform viewer for VCD files.
 
-  claudeV [-d DISPLAY] [file.vcd]
+## 1. Prerequisites
 
-  -d, --display   X display string (e.g. :0  :1  localhost:0  localhost:1)
-  -h, --help      Print usage summary
+- Linux/Unix desktop with an X11 display server (or XWayland).
+- Rust toolchain (`cargo`, `rustc`) installed.
 
-  If no file is given, press 's' inside the viewer to load a built-in
-  sample VCD and explore the interface.
+## 2. Build
 
-  On Termux with Termux-X11:
-    termux-x11 :1 &
-    export DISPLAY=:1
-    claudeV myfile.vcd
+```bash
+cargo build
+```
 
-  If the Unix socket path fails, use TCP:
-    claudeV -d localhost:1 myfile.vcd
+For an optimized build:
 
+```bash
+cargo build --release
+```
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-LAYOUT
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+## 3. Run
 
-  ┌─ Header bar ────────────────────────────────────────────────────────────┐
-  │ [HIER] file.vcd  z=1.0x  0..11000ns  T=5420ns  pinned=12               │
-  ├─ MODULE ──────────┬─ SIGNAL NAME ──────────────┬─ WAVEFORM ────────────┤
-  │ ▼ testbench       │ testbench.clk              │  ‾╮╭‾╮╭‾╮╭‾╮╭‾╮╭‾╮  │
-  │   ▶ uut           │  clk                       │   ╰╯ ╰╯ ╰╯ ╰╯ ╰╯ ╰╯  │
-  │                   │ testbench.mem_addr[31:0]   │  ╟──0x100──╢╟──0x104  │
-  │ ▼ tb.SIGNALS(12)  │  mem_addr[31:0]     0x100  │                       │
-  │   clk             │                            │                       │
-  │   mem_addr        ├────────────────────────────┤                       │
-  │   …               │ ▼ Control                  │                       │
-  ├───────────────────┤   mem_valid                │                       │
-  │ ▼ uut             │                            │                       │
-  │   alu_out         │ ─── (spacer) ───            │                       │
-  ├─ Status bar ──────┴────────────────────────────┴───────────────────────┤
-  │ WAVE  ◆ testbench.mem_addr[31:0]                                        │
-  └─────────────────────────────────────────────────────────────────────────┘
+Run with no file:
 
-  Three panels, separated by white lines:
+```bash
+cargo run
+```
 
-  MODULE panel (left, top half)
-    Displays the $scope hierarchy from the VCD file.
-    Navigate here to find signals and add them to the waveform view.
+Run with a VCD file:
 
-  SIGNAL panel (left, bottom half)
-    Lists the signals directly inside the selected module.
-    Signals already added to the waveform are marked with ►.
+```bash
+cargo run -- path/to/file.vcd
+```
 
-  WAVEFORM panel (right)
-    Shows signal names and their waveforms over time.
-    This is where you arrange, group, and analyse signals.
+Run with an explicit display:
 
-  The active panel is highlighted with a bright border and labelled in the
-  status bar at the bottom of the window.
+```bash
+cargo run -- -d :0 path/to/file.vcd
+```
 
-  Press Tab to cycle focus: MODULE → SIGNAL → WAVEFORM → MODULE → …
+Load built binary directly:
 
+```bash
+./target/debug/claudeV path/to/file.vcd
+```
+
+## 4. UI Overview
+
+The window has three main work areas:
+
+- Module Browser (top-left): scope tree.
+- Signals (bottom-left): signals in the selected scope.
+- Wave (right): pinned waveform rows.
+
+There is also:
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-GLOBAL KEYS  (work in any panel)
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-  Tab             Cycle panel focus
-  s               Load built-in sample VCD
-  q  /  Esc       Quit
-  ?               Show keybinding summary in status bar
-
-  ── Zoom ──────────────────────────────────────────────────────────────────
-
-  +  or  =        Zoom in ×2 (centred on current view midpoint)
-  -               Zoom out ×2
-  f  or  0        Fit entire simulation time into the window
-  Mouse scroll    Zoom in/out ×2, centred on mouse pointer position
-
-  ── Pan ───────────────────────────────────────────────────────────────────
-
-  h  or  ←        Pan left 10% of current view range
-  l  or  →        Pan right 10%
-  H               Jump to time 0
-  L               Jump to end of simulation
-
-  ── Cursor ────────────────────────────────────────────────────────────────
-
-  c               Place cursor at the centre of the current view
-  C               Remove cursor
-  [               Nudge cursor left  (2% of view range)
-  ]               Nudge cursor right
-  n               Jump cursor to the next edge on the selected signal
-  N               Jump cursor to the previous edge
-
-  When a cursor is placed, each signal row shows its value at that time
-  in the signal name column, right-aligned.
-
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-MODULE PANEL  (focus: MODULE)
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-  j  /  ↓         Move selection down
-  k  /  ↑         Move selection up
-  PgDn / PgUp     Scroll a page at a time
-
-  Enter  or  a    Expand / collapse the selected module
-  A               Add ALL signals inside the selected module (and its
-                  sub-modules) to the waveform view at once
-
-  The current selection is always shown in the SIGNAL panel below.
-
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-SIGNAL PANEL  (focus: SIGNAL)
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-  j  /  ↓         Move selection down
-  k  /  ↑         Move selection up
-  PgDn / PgUp     Scroll a page at a time
-
-  a  or  Enter    Toggle the selected signal in/out of the waveform view
-  A               Add all signals in the currently selected module
-
-  Signals that are in the waveform view are shown with a ► prefix.
-
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-WAVEFORM PANEL  (focus: WAVE)
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-  j  /  ↓         Move selection down one row
-  k  /  ↑         Move selection up one row
-  PgDn / PgUp     Scroll a page at a time
-
-  ── Signal management ─────────────────────────────────────────────────────
-
-  d  /  Del       Remove the selected row from the waveform view
-                  On a group header: dissolves the group, keeping its
-                  signals as top-level rows
-                  On a spacer: removes the spacer
-
-  J               Move the selected row DOWN in the list
-  K               Move the selected row UP in the list
-                  Works on signals (within their container), group headers,
-                  and bit-slice rows (within their parent bus)
-
-  e  or  Enter    On a multi-bit bus: expand to individual bit lanes
-                  On an already-expanded bus bit: collapse back
-                  On a group header: toggle collapse/expand
-
-  ── Groups ────────────────────────────────────────────────────────────────
-
-  g               Create a group.
-                  If a top-level signal is selected, it becomes the first
-                  member of the new group.
-                  Otherwise an empty group is inserted after the selection.
-
-  m               Move the selected top-level signal into the nearest
-                  group that appears above it in the list.
-
-  Enter           On a group header: toggle collapse (hides member signals,
-                  shows only the header row).
-
-  d               On a group header: dissolve the group. All member signals
-                  are promoted to top-level rows in place.
-
-  Signals inside a group show a cyan left-edge bar to indicate membership.
-
-  Example workflow — grouping control signals:
-    1. Add clk, rst, mem_valid, mem_ready to the waveform (via SIGNAL panel)
-    2. Navigate WAVE focus to clk, press g  → creates "Group" with clk inside
-    3. Navigate to rst, press m             → rst moves into the group
-    4. Navigate to the group header, press J/K to reorder it
-    5. Press Enter on the header to collapse when not needed
-
-  ── Spacers ───────────────────────────────────────────────────────────────
-
-  i               Insert a spacer (blank row) after the current selection.
-                  Useful for visually separating groups of signals.
-
-  d  /  Del       Remove the spacer the cursor is on.
-
-  ── Bus expansion ─────────────────────────────────────────────────────────
-
-  When a multi-bit bus is selected:
-
-  e  or  Enter    Expand: inserts one row per bit below the bus row,
-                  labelled [N], [N-1], … [0], each showing a 1-bit
-                  digital waveform extracted from the bus value.
-
-  e  or  Enter    On any bit row: collapse back to bus-only view.
-
-  Each bit row shows its individual value at the cursor position.
-
-  ── Signal name column ────────────────────────────────────────────────────
-
-  Each signal row shows two lines in the name column:
-    Top:    Full hierarchical path (testbench.uut.alu_out) truncated from
-            the left if needed (shown as …uut.alu_out)
-    Bottom: Short signal name + bit width (alu_out[31:0])
-    Right:  Value at cursor time (only visible when cursor is placed)
-
-  Computed signals (see below) are shown in purple with their expression
-  as the name.
-
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-COMPUTED SIGNALS
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-  Computed signals are derived waveforms created by applying arithmetic or
-  logical operations to existing signals. They appear as new rows in the
-  waveform panel, rendered in purple.
-
-  Computed signals can themselves be used as inputs to further operations,
-  allowing you to chain expressions of arbitrary depth.
-
-  ── Creating a computed signal ────────────────────────────────────────────
-
-  1. In the WAVE panel, navigate to a signal (or existing computed signal).
-  2. Press  o  to start an operation.
-     The status bar shows the available operators.
-  3. Press the operator key (see table below).
-  4. For binary operators: navigate j/k to the second signal, then Enter.
-     For shift operators: type the shift amount (0–63) then Enter.
-  5. Press  Esc  at any point to cancel.
-
-  ── Unary operators ───────────────────────────────────────────────────────
-
-  After pressing 'o':
-
-  Key   Operation       Result
-  ────  ─────────────── ──────────────────────────────────────────────────
-  ~     NOT             Bitwise invert every bit of the signal
-  <     Shift Left      Prompts for amount N, result = signal << N
-  >     Shift Right     Prompts for amount N, result = signal >> N
-
-  ── Binary operators ──────────────────────────────────────────────────────
-
-  After pressing 'o', then navigating to and confirming a second signal:
-
-  Key   Operation       Result
-  ────  ─────────────── ──────────────────────────────────────────────────
-  &     AND             A & B   (bitwise)
-  |     OR              A | B   (bitwise)
-  ^     XOR             A ^ B   (bitwise)
-  !     NAND            ~(A & B)
-  %     NOR             ~(A | B)
-  @     XNOR            ~(A ^ B)
-
-  For binary ops with signals of different widths, the result width
-  equals the wider of the two inputs (the narrower is zero-extended).
-
-  ── How computation works ─────────────────────────────────────────────────
-
-  The computed signal is evaluated at every time point where either
-  input signal has a value change. The result is a new set of value
-  changes stored in memory — it is NOT written back to the VCD file.
-
-  Unknown (x) and high-impedance (z) values are treated as 0 in all
-  arithmetic. The result width is always an integer number of bits.
-
-  ── Computed signal display ───────────────────────────────────────────────
-
-  Name column top:    Full expression  e.g. (mem_valid & mem_ready)
-  Name column bottom: Bit width        e.g. [0:0]
-  Name column right:  Value at cursor  e.g. 0x1
-  Left edge bar:      Purple, identifying it as computed
-
-  ── Managing computed signals ─────────────────────────────────────────────
-
-  d / Del     Remove from the waveform view (the definition is kept in
-              memory; re-add with PinItem if needed — currently the
-              simplest approach is to recreate it via 'o')
-
-  J / K       Reorder like any other row
-
-  e / Enter   (No effect — computed signals cannot be expanded to bits
-              directly; use 'o' with ~ or << on a bit-slice row instead)
-
-  ── Example: decode a memory transaction ─────────────────────────────────
-
-    Suppose you have mem_valid, mem_ready, and mem_wstrb[3:0].
-
-    Step 1: Create  (mem_valid & mem_ready)
-      - Navigate to mem_valid, press o, press &
-      - Navigate to mem_ready, press Enter
-      - Result: "(mem_valid & mem_ready)" row appears in purple
-
-    Step 2: Create  ~mem_wstrb  (inverted write strobe)
-      - Navigate to mem_wstrb, press o, press ~
-      - Result: "~(mem_wstrb)" row appears
-
-    Step 3: Chain — AND the valid/ready signal with inverted wstrb
-      - Navigate to "(mem_valid & mem_ready)", press o, press &
-      - Navigate to "~(mem_wstrb)", press Enter
-      - Result: "((mem_valid & mem_ready) & ~(mem_wstrb))"
-
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-WAVEFORM DISPLAY
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-  ── 1-bit digital signals ─────────────────────────────────────────────────
-
-         ‾‾‾‾‾╮   ╭‾‾‾‾‾‾‾╮   ╭‾‾
-         HIGH  ╰───╯  LOW   ╰───╯   TRANSITION
-
-  Value   Display
-  ──────  ──────────────────────────────────────────────
-  1       Line drawn at top of row (bright green)
-  0       Line drawn at bottom of row (dark green)
-  x       Dashed line at mid-row (orange)
-  z       Dashed line at mid-row (blue)
-
-  When many transitions fall within a single pixel column (common at
-  fit-all zoom on fast clocks), a dim vertical "activity bar" is drawn
-  spanning the full row height to indicate that activity is present.
-  Zoom in to resolve individual edges.
-
-  ── Multi-bit buses ───────────────────────────────────────────────────────
-
-    ╟────── 0x1A ──────╢╟─── 0x2B ───╢╟─ X ─╢
-
-  Each distinct value is shown as a trapezoid with the hex value inside.
-  X (unknown) is shown in orange. Narrow segments show no label.
-
-  ── Ruler ─────────────────────────────────────────────────────────────────
-
-  The ruler at the top of the waveform area shows time in VCD timescale
-  units (e.g. ns). Step marks are spaced to avoid crowding.
-
-  A bright green marker and label always appear at max_time (end of
-  simulation) regardless of step alignment.
-
-  The yellow cursor marker appears as a filled rectangle on the ruler.
-
-  ── End-of-simulation line ────────────────────────────────────────────────
-
-  A faint bright-green vertical line runs through all waveform rows at
-  max_time, making the simulation boundary immediately visible.
-
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-VCD FILE SUPPORT
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-  Supported VCD features:
-    • $timescale, $date, $version, $comment
-    • $scope / $upscope (module hierarchy, arbitrary depth)
-    • $var (wire, reg) — scalar and vector
-    • $dumpvars, $dumpon, $dumpoff, $dumpall
-    • Scalar value changes: 0, 1, x, X, z, Z
-    • Vector value changes: b… notation
-    • Multi-character signal identifiers (VCD files with >94 signals)
-
-  Signal values use binary search for O(log n) lookup at any time point.
-  This keeps cursor readout fast even with 500+ signals and dense traces.
-
-  Unknown (x) and high-impedance (z) initial values before the first
-  recorded change are shown as dashed lines.
-
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-COMPLETE KEY REFERENCE
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-  GLOBAL
-  ──────
-  Tab             Cycle panel focus (MODULE → SIGNAL → WAVE → …)
-  s               Load sample VCD
-  q  /  Esc       Quit
-  ?               Print keybinding help to status bar
-  + / =           Zoom in ×2
-  -               Zoom out ×2
-  f / 0           Fit all (zoom=1, view_start=0)
-  h / ←           Pan left 10%
-  l / →           Pan right 10%
-  H               Jump to start (time=0)
-  L               Jump to end (time=max)
-  c               Place cursor at view centre
-  C               Clear cursor
-  [               Nudge cursor left 2%
-  ]               Nudge cursor right 2%
-  n               Next edge on selected signal
-  N               Previous edge on selected signal
-  Scroll up       Zoom in ×2 centred on pointer
-  Scroll down     Zoom out ×2 centred on pointer
-
-  MODULE PANEL
-  ────────────
-  j / ↓           Down
-  k / ↑           Up
-  PgDn / PgUp     Page down / up
-  Enter / a       Expand or collapse selected module
-  A               Add all signals in selected module to waveform
-
-  SIGNAL PANEL
-  ────────────
-  j / ↓           Down
-  k / ↑           Up
-  PgDn / PgUp     Page down / up
-  a / Enter       Toggle selected signal in waveform view
-  A               Add all signals in current module
-
-  WAVEFORM PANEL
-  ──────────────
-  j / ↓           Down
-  k / ↑           Up
-  PgDn / PgUp     Page down / up
-  d / Del         Remove row (dissolve group, remove spacer)
-  J               Move row down
-  K               Move row up
-  e / Enter       Expand bus / collapse bus / toggle group
-  g               Create group (wraps selected signal or inserts empty)
-  m               Move signal into nearest group above
-  i               Insert spacer after current row
-  o               Start computed signal operation on selected signal
-
-  COMPUTED SIGNAL OPERATION  (after pressing 'o')
-  ────────────────────────────────────────────────
-  ~               NOT (unary)
-  <               Shift left — then type amount + Enter
-  >               Shift right — then type amount + Enter
-  &               AND (binary — then navigate to second signal + Enter)
-  |               OR
-  ^               XOR
-  !               NAND
-  %               NOR
-  @               XNOR
-  Esc             Cancel operation
-
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-TIPS
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-  • Start with  f  to see the full simulation, then scroll-zoom into
-    interesting regions.
-
-  • Use  c  to drop a cursor, then  n/N  to step through the edges of the
-    selected signal — the cursor jumps to each transition and the value
-    readout in the name column updates live.
-
-  • For a clock signal, zoom until individual edges are clearly visible.
-    At fit-all zoom a fast clock appears as a grey "buzz bar" — this is
-    correct and intentional; zoom in to see individual cycles.
-
-  • The full signal path is always shown in the status bar when you
-    navigate in the WAVE panel, making it easy to confirm which signal
-    you are looking at even when the name column is truncated.
-
-  • Group related signals (e.g. a memory bus: addr, data, valid, ready)
-    and collapse the group when you are done to save screen space.
-
-  • Spacers are useful to visually separate a clock group at the top from
-    data signals below, or to mark the boundary between two pipeline stages.
-
-  • Computed signals are evaluated eagerly at load time, so they are as
-    fast to display as regular signals.
-
-  • Press  ?  at any time for a one-line reminder of the most common keys.
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+- Top menu bar (`File`, `Edit`, `Search`, etc.; only `File` has actions).
+- Toolbar (filename, zoom, view range, focus, filter).
+- Overview strip (global time-range context).
+- Marker dock (A/B markers and cursor readouts).
+- Status bar (current focus and action status).
+
+## 5. Quick Workflow
+
+1. Open a VCD file from CLI or `File -> Open`.
+2. In Module Browser, pick a scope (`j/k`, arrows, or mouse click).
+3. In Signals focus, add desired signals with `a` or `Enter`.
+4. Switch to Wave focus with `Tab` and inspect/reorder wave rows.
+5. Zoom/pan/cursor/marker controls to measure time deltas.
+
+## 6. Keyboard Controls
+
+### Global
+
+- `q` / `Esc`: quit.
+- `s`: load built-in sample VCD.
+- `Tab`: cycle focus `Browser -> Signals -> Wave`.
+- `/`: start filter editing.
+- `X`: clear filter.
+- `+` or `=`: zoom in.
+- `-` or `_`: zoom out.
+- `f` or `0`: fit full timeline.
+- `h` / Left Arrow: pan left.
+- `l` / Right Arrow: pan right.
+- `H`: jump to start.
+- `L`: jump to end.
+- `c`: set cursor to center of current view.
+- `C`: clear cursor.
+- `m`: set active marker (A or B) at cursor (or view center if cursor is off).
+- `M`: toggle active marker (A/B).
+- `D`: clear markers.
+- `[` / `]`: nudge cursor left/right.
+- `n` / `N`: jump cursor to next/previous edge on selected wave signal.
+- `?`: show compact help text in status bar.
+
+### Module Browser Focus
+
+- `j` / Down Arrow: next scope.
+- `k` / Up Arrow: previous scope.
+- `PageDown` / `PageUp`: page navigation.
+- `Enter` / `e`: expand/collapse selected scope.
+- `A`: add all signals in selected scope recursively.
+
+### Signals Focus
+
+- `j` / Down Arrow: next signal.
+- `k` / Up Arrow: previous signal.
+- `PageDown` / `PageUp`: page navigation.
+- `a` / `Enter`: add/remove selected signal from Wave.
+- `A`: add all signals in selected scope.
+
+### Wave Focus
+
+- `j` / Down Arrow: next wave row.
+- `k` / Up Arrow: previous wave row.
+- `PageDown` / `PageUp`: page navigation.
+- `d` / `Delete` / `Backspace`: remove selected signal row (or collapse bit-slice row).
+- `J`: move selected signal down.
+- `K`: move selected signal up.
+- `e` / `E` / `Enter`: expand/collapse bus rows into bit slices.
+
+### File Browser Mode (`File -> Open`)
+
+- `Up` / `Down` or `k` / `j`: move selection.
+- `PageUp` / `PageDown`: page navigation.
+- `Enter` / `e`: open selected directory or file.
+- `Esc`: cancel open dialog.
+
+## 7. Mouse Controls
+
+- Click top `File` menu:
+  - `Open`: file browser panel (shows directories and `.vcd` files).
+  - `Reload`: reload current file.
+  - `Exit`: quit.
+- Click module row to select scope.
+- Click signal row to select signal.
+- Drag signal row from Signals panel to Wave panel to pin it.
+- Click wave row to select it.
+- Click ruler/wave area to place cursor at clicked time.
+- Drag splitters:
+  - Vertical splitter between left and right panels.
+  - Vertical splitter between signal-name/value and wave area.
+  - Horizontal splitter between Module Browser and Signals panels.
+- Mouse wheel:
+  - Over Wave area: zoom in/out around pointer.
+  - Over Signals area: scroll vertical list.
+  - `Shift` + wheel (or buttons 6/7): horizontal scroll in Signals list.
+
+## 8. Scopes, Filtering, and “All Scopes”
+
+- The Module Browser includes a synthetic `(all scopes)` row.
+- Selecting `(all scopes)` makes the Signals list global.
+- Filter (`/`) matches `signal name` or `full hierarchical name`.
+- Filter is case-sensitive.
+
+## 9. Troubleshooting
+
+- No window appears / display error:
+  - Ensure `DISPLAY` is set and X11 is accessible.
+  - If on Wayland, make sure XWayland is available.
+- `File error` when loading:
+  - Confirm path exists and is readable.
+  - Use `File -> Open` to browse and select.
+- `Parse error`:
+  - Input may not match supported VCD constructs.
+  - Try with a simpler/known-good VCD file.
+- `Reload unavailable: no file loaded`:
+  - Load a file first (CLI path or `File -> Open`).
+
+## 10. CLI Help
+
+```bash
+cargo run -- --help
+```
+
+Current usage:
+
+```text
+claudeV [-d DISPLAY] [file.vcd]
+```

@@ -4,6 +4,7 @@ use std::collections::HashMap;
 pub struct Signal {
     pub id: String,
     pub name: String,
+    pub scope: String,
     pub full_name: String,
     pub width: usize,
 }
@@ -34,59 +35,76 @@ impl VcdData {
 }
 
 pub fn parse_vcd(text: &str) -> Result<VcdData, String> {
-    let tokens: Vec<&str> = text.split_whitespace().collect();
+    let mut tokens = text.split_whitespace();
     let mut timescale = "1 ns".to_string();
     let mut signals: Vec<Signal> = Vec::new();
     let mut changes: HashMap<String, Vec<ValueChange>> = HashMap::new();
     let mut max_time = 0u64;
     let mut current_time = 0u64;
     let mut scope_stack: Vec<String> = Vec::new();
-    let mut i = 0;
 
-    while i < tokens.len() {
-        let tok = tokens[i]; i += 1;
+    while let Some(tok) = tokens.next() {
         match tok {
             "$timescale" => {
                 let mut parts = Vec::new();
-                while i < tokens.len() && tokens[i] != "$end" { parts.push(tokens[i]); i += 1; }
-                if i < tokens.len() { i += 1; }
+                for part in tokens.by_ref() {
+                    if part == "$end" { break; }
+                    parts.push(part);
+                }
                 timescale = parts.join(" ");
             }
             "$scope" => {
-                i += 1;
-                if i < tokens.len() { scope_stack.push(tokens[i].to_string()); i += 1; }
-                if i < tokens.len() && tokens[i] == "$end" { i += 1; }
+                let _scope_type = tokens.next();
+                if let Some(name) = tokens.next() {
+                    scope_stack.push(name.to_string());
+                }
+                for part in tokens.by_ref() {
+                    if part == "$end" { break; }
+                }
             }
             "$upscope" => {
                 scope_stack.pop();
-                if i < tokens.len() && tokens[i] == "$end" { i += 1; }
+                for part in tokens.by_ref() {
+                    if part == "$end" { break; }
+                }
             }
             "$var" => {
-                let _type = if i < tokens.len() { i += 1; tokens[i-1] } else { continue };
-                let width = if i < tokens.len() { let w = tokens[i].parse().unwrap_or(1); i += 1; w } else { 1usize };
-                let id = if i < tokens.len() { let s = tokens[i].to_string(); i += 1; s } else { continue };
-                let name = if i < tokens.len() { let s = tokens[i].to_string(); i += 1; s } else { continue };
-                while i < tokens.len() && tokens[i] != "$end" { i += 1; }
-                if i < tokens.len() { i += 1; }
-                let full_name = if scope_stack.is_empty() { name.clone() }
-                    else { format!("{}.{}", scope_stack.join("."), name) };
-                signals.push(Signal { id: id.clone(), name, full_name, width });
+                let _type = if tokens.next().is_some() { () } else { continue };
+                let width = tokens.next()
+                    .and_then(|w| w.parse().ok())
+                    .unwrap_or(1usize);
+                let id = if let Some(id) = tokens.next() {
+                    id.to_string()
+                } else {
+                    continue;
+                };
+                let name = if let Some(name) = tokens.next() {
+                    name.to_string()
+                } else {
+                    continue;
+                };
+                for part in tokens.by_ref() {
+                    if part == "$end" { break; }
+                }
+                let scope = scope_stack.join(".");
+                let full_name = if scope.is_empty() { name.clone() }
+                    else { format!("{}.{}", scope, name) };
+                signals.push(Signal { id: id.clone(), name, scope, full_name, width });
                 changes.insert(id, Vec::new());
             }
             "$dumpvars" | "$dumpon" | "$dumpoff" | "$dumpall" => {
                 loop {
-                    if i >= tokens.len() { break; }
-                    let t = tokens[i];
-                    if t == "$end" { i += 1; break; }
-                    i += 1;
-                    if let Some((val, id)) = parse_val(t, &tokens, &mut i) {
+                    let Some(t) = tokens.next() else { break };
+                    if t == "$end" { break; }
+                    if let Some((val, id)) = parse_val(t, &mut tokens) {
                         if let Some(v) = changes.get_mut(&id) { v.push(ValueChange { time: current_time, value: val }); }
                     }
                 }
             }
             "$comment" | "$version" | "$date" => {
-                while i < tokens.len() && tokens[i] != "$end" { i += 1; }
-                if i < tokens.len() { i += 1; }
+                for part in tokens.by_ref() {
+                    if part == "$end" { break; }
+                }
             }
             "$end" => {}
             t if t.starts_with('#') => {
@@ -94,7 +112,7 @@ pub fn parse_vcd(text: &str) -> Result<VcdData, String> {
                 if current_time > max_time { max_time = current_time; }
             }
             t => {
-                if let Some((val, id)) = parse_val(t, &tokens, &mut i) {
+                if let Some((val, id)) = parse_val(t, &mut tokens) {
                     if let Some(v) = changes.get_mut(&id) { v.push(ValueChange { time: current_time, value: val }); }
                 }
             }
@@ -103,19 +121,33 @@ pub fn parse_vcd(text: &str) -> Result<VcdData, String> {
     Ok(VcdData { timescale, signals, changes, max_time })
 }
 
-fn parse_val(tok: &str, tokens: &[&str], i: &mut usize) -> Option<(String, String)> {
+fn parse_val<'a>(tok: &'a str, tokens: &mut impl Iterator<Item = &'a str>) -> Option<(String, String)> {
     let first = tok.chars().next()?;
     match first {
         'b'|'B'|'r'|'R' => {
             let val = tok[1..].to_string();
-            let id = tokens.get(*i)?.to_string();
-            *i += 1;
+            let id = tokens.next()?.to_string();
             Some((val, id))
         }
         '0'|'1'|'x'|'X'|'z'|'Z' if tok.len() >= 2 => {
             Some((first.to_lowercase().to_string(), tok[1..].to_string()))
         }
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_sample_vcd() {
+        let data = parse_vcd(SAMPLE_VCD).expect("sample VCD should parse");
+        assert_eq!(data.timescale, "1 ns");
+        assert_eq!(data.signals.len(), 7);
+        assert_eq!(data.max_time, 200);
+        assert_eq!(data.get_value_at("!", 0), "0");
+        assert_eq!(data.get_value_at("#", 20), "10101010");
     }
 }
 
