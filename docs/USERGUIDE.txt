@@ -60,6 +60,7 @@ There is also:
 - Overview strip (global time-range context).
 - Marker dock (A/B markers and cursor readouts).
 - Status bar (current focus and action status).
+- The toolbar also shows the A/B marker delta once both markers are set.
 
 ## 5. Quick Workflow
 
@@ -78,6 +79,9 @@ There is also:
 - `Tab`: cycle focus `Browser -> Signals -> Wave`.
 - `/`: start filter editing.
 - `X`: clear filter.
+- `p`: toggle signal labels between full hierarchical path and short signal name.
+- `z`: cycle display size `default -> big -> large -> huge`.
+- `t`: cycle color scheme `default -> graphite -> amber -> midnight`.
 - `+` or `=`: zoom in.
 - `-` or `_`: zoom out.
 - `f` or `0`: fit full timeline.
@@ -107,7 +111,9 @@ There is also:
 - `j` / Down Arrow: next signal.
 - `k` / Up Arrow: previous signal.
 - `PageDown` / `PageUp`: page navigation.
+- `Space`: toggle the current signal in the multi-selection set.
 - `a` / `Enter`: add/remove selected signal from Wave.
+  If a multi-selection exists, `a` / `Enter` toggles every selected signal.
 - `A`: add all signals in selected scope.
 
 ### Wave Focus
@@ -115,7 +121,9 @@ There is also:
 - `j` / Down Arrow: next wave row.
 - `k` / Up Arrow: previous wave row.
 - `PageDown` / `PageUp`: page navigation.
+- `Space`: toggle the current waveform in the multi-selection set.
 - `d` / `Delete` / `Backspace`: remove selected signal row (or collapse bit-slice row).
+  If a multi-selection exists, removal applies to every selected waveform.
 - `J`: move selected signal down.
 - `K`: move selected signal up.
 - `e` / `E` / `Enter`: expand/collapse bus rows into bit slices.
@@ -133,10 +141,15 @@ There is also:
   - `Open`: file browser panel (shows directories and `.vcd` files).
   - `Reload`: reload current file.
   - `Exit`: quit.
+- Click top `View` menu:
+  - `Refresh`: redraw the window.
 - Click module row to select scope.
 - Click signal row to select signal.
+- `Ctrl-click` signal or wave rows to add/remove a row from the multi-selection.
+- `Shift-click` signal or wave rows to select a range from the active row.
 - Drag signal row from Signals panel to Wave panel to pin it.
 - Click wave row to select it.
+- Selected waveform rows use a distinct background in the waveform area.
 - Click ruler/wave area to place cursor at clicked time.
 - Drag splitters:
   - Vertical splitter between left and right panels.
