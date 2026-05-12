@@ -1,12 +1,14 @@
 # claudeV
 
-Native X11 waveform viewer for VCD and XTrace text files.
+Native X11 waveform viewer for VCD and XTrace text files (plain or zstd-compressed).
 
 ![VCD Viewer](docs/screenshot.png)
 
 ## Features
 
 - Load VCD or XTrace-T files from CLI or in-app file browser.
+- Transparently opens zstd-compressed dumps (e.g. `run.xt.zst`, `waves.vcd.zst`) —
+  detected by file content, so the extension doesn't matter.
 - Browse module scopes and signal lists.
 - Pin/reorder wave rows and expand buses into bit slices.
 - Zoom, pan, cursor placement, and A/B marker measurements.
@@ -53,6 +55,12 @@ Run with an XTrace file:
 cargo run -- path/to/file.xtrace
 ```
 
+Run with a zstd-compressed dump (VCD or XTrace):
+
+```bash
+cargo run -- path/to/run.xt.zst
+```
+
 Specify X11 display:
 
 ```bash
@@ -62,7 +70,7 @@ cargo run -- -d :0 path/to/file.vcd
 Binary usage:
 
 ```text
-claudeV [-d DISPLAY] [file.vcd|file.xtrace]
+claudeV [-d DISPLAY] [file.vcd|file.xtrace|file.*.zst]
 ```
 
 ## Quick Controls

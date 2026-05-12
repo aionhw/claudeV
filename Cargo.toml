@@ -10,6 +10,8 @@ path = "src/main.rs"
 
 [dependencies]
 x11rb = { version = "0.13", features = ["allow-unsafe-code"] }
+# Transparent decompression of `.zst`-compressed VCD / XTrace dumps.
+zstd = "0.13"
 
 [profile.release]
 opt-level = 3

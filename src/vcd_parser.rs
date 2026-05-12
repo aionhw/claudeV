@@ -1,7 +1,35 @@
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
-use std::io::{BufRead, BufReader, Read};
+use std::io::{self, BufRead, BufReader, Cursor, Read};
 use std::path::Path;
+
+/// Open `path` for reading, transparently decompressing the byte stream when
+/// it is a zstd frame. Detection is by magic number, so a compressed dump is
+/// recognized regardless of its filename (`foo.xt.zst`, `foo.xt`, …).
+fn open_dump_reader(path: &str) -> Result<Box<dyn Read>, String> {
+    let mut file = File::open(path).map_err(|e| e.to_string())?;
+    // Sniff the leading bytes, then chain them back in front of the file so
+    // the decoder (or the plain reader) sees the whole stream.
+    let mut magic = [0u8; 4];
+    let mut have = 0usize;
+    while have < magic.len() {
+        match file.read(&mut magic[have..]) {
+            Ok(0) => break,
+            Ok(n) => have += n,
+            Err(ref e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e.to_string()),
+        }
+    }
+    let head = &magic[..have];
+    let stream = Cursor::new(head.to_vec()).chain(file);
+    // zstd frame magic: 28 B5 2F FD
+    if head.starts_with(&[0x28, 0xB5, 0x2F, 0xFD]) {
+        let dec = zstd::stream::read::Decoder::new(stream).map_err(|e| e.to_string())?;
+        Ok(Box::new(dec))
+    } else {
+        Ok(Box::new(stream))
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct Signal {
@@ -206,8 +234,7 @@ pub fn parse_trace_file(path: &str) -> Result<VcdData, String> {
         parse_xtrace_file_partial(path)
     } else {
         let mut text = String::new();
-        File::open(path)
-            .map_err(|e| e.to_string())?
+        open_dump_reader(path)?
             .read_to_string(&mut text)
             .map_err(|e| e.to_string())?;
         parse_vcd(&text)
@@ -226,8 +253,7 @@ pub fn load_xtrace_signal_changes(
         .iter()
         .map(|(id, _)| (id.clone(), Vec::new()))
         .collect();
-    let file = File::open(path).map_err(|e| e.to_string())?;
-    let reader = BufReader::with_capacity(1024 * 1024, file);
+    let reader = BufReader::with_capacity(1024 * 1024, open_dump_reader(path)?);
     let mut section = String::new();
     let mut current_time = 0u64;
 
@@ -306,8 +332,7 @@ pub fn load_xtrace_signal_changes(
 }
 
 fn file_starts_with_xtrace(path: &str) -> Result<bool, String> {
-    let file = File::open(path).map_err(|e| e.to_string())?;
-    let reader = BufReader::new(file);
+    let reader = BufReader::new(open_dump_reader(path)?);
     for raw_line in reader.lines().take(32) {
         let raw_line = raw_line.map_err(|e| e.to_string())?;
         let line = raw_line.trim();
@@ -316,21 +341,23 @@ fn file_starts_with_xtrace(path: &str) -> Result<bool, String> {
         }
         return Ok(line.starts_with("@xtrace"));
     }
-    Ok(Path::new(path)
+    // Extension fallback (when the file is empty / no leading directive).
+    // Strip a trailing compression suffix first so `foo.xt.zst` still counts.
+    let lower = path.to_ascii_lowercase();
+    let base = lower
+        .strip_suffix(".zst")
+        .or_else(|| lower.strip_suffix(".zstd"))
+        .or_else(|| lower.strip_suffix(".gz"))
+        .unwrap_or(lower.as_str());
+    Ok(Path::new(base)
         .extension()
         .and_then(|ext| ext.to_str())
-        .map(|ext| {
-            matches!(
-                ext.to_ascii_lowercase().as_str(),
-                "xtrace" | "xtr" | "xt" | "xtt"
-            )
-        })
+        .map(|ext| matches!(ext, "xtrace" | "xtr" | "xt" | "xtt"))
         .unwrap_or(false))
 }
 
 fn parse_xtrace_file_partial(path: &str) -> Result<VcdData, String> {
-    let file = File::open(path).map_err(|e| e.to_string())?;
-    let reader = BufReader::with_capacity(1024 * 1024, file);
+    let reader = BufReader::with_capacity(1024 * 1024, open_dump_reader(path)?);
     let mut saw_header = false;
     let mut timescale = "1ns".to_string();
     let mut section = String::new();
@@ -783,6 +810,35 @@ mod tests {
         assert_eq!(data.signals[0].full_name, "top.cpu.pc");
         assert_eq!(data.get_value_at("s0", 1), "0001001000110100");
         assert_eq!(data.get_value_at("s2", 2), "0");
+    }
+
+    #[test]
+    fn reads_zstd_compressed_xtrace_file() {
+        use std::io::Write;
+        let path = std::env::temp_dir()
+            .join(format!("claudev_zst_test_{}.xt.zst", std::process::id()));
+        {
+            let f = File::create(&path).expect("create temp file");
+            let mut enc = zstd::stream::write::Encoder::new(f, 3).expect("zstd encoder");
+            enc.write_all(SAMPLE_XTRACE.as_bytes()).expect("write");
+            enc.finish().expect("finish zstd frame");
+        }
+        let p = path.to_str().unwrap();
+
+        // Detection + metadata parse must see through the compression.
+        assert!(file_starts_with_xtrace(p).expect("detect"));
+        let data = parse_trace_file(p).expect("compressed XTrace metadata should parse");
+        assert_eq!(data.format, "XTrace");
+        assert_eq!(data.signals.len(), 3);
+        assert_eq!(data.signals[0].full_name, "top.cpu.pc");
+        assert_eq!(data.max_time, 2);
+
+        // Streaming value-change load must also decompress.
+        let changes =
+            load_xtrace_signal_changes(p, &[("s0".to_string(), 16)]).expect("load changes");
+        assert_eq!(changes["s0"].last().map(|vc| vc.value.as_str()), Some("0001001000110100"));
+
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
