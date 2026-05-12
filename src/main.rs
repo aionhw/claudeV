@@ -1,5 +1,10 @@
 mod vcd_parser;
-use vcd_parser::{parse_vcd, ValueChange, VcdData, SAMPLE_VCD};
+#[cfg(test)]
+use vcd_parser::parse_vcd;
+use vcd_parser::{
+    load_xtrace_signal_changes, parse_trace, parse_trace_file, ValueChange, VcdData, SAMPLE_VCD,
+    SAMPLE_XTRACE,
+};
 
 use std::collections::{HashMap, HashSet};
 use std::error::Error;
@@ -28,37 +33,37 @@ const XK_BACKSPACE: u32 = 0xFF08;
 const XK_SPACE: u32 = 0x0020;
 
 // ── Colours ───────────────────────────────────────────────────────────────────
-const C_BG: u32 = 0x10141B;
-const C_WAVE_ALT: u32 = 0x131924;
-const C_PANEL: u32 = 0x161D28;
-const C_HEADER: u32 = 0x0D1219;
-const C_TOOLBAR: u32 = 0x121925;
-const C_OVERVIEW: u32 = 0x0E1520;
-const C_HI: u32 = 0x3BE374;
-const C_LO: u32 = 0x1E8C52;
-const C_X: u32 = 0xFF8A4C;
-const C_Z: u32 = 0x56B6FF;
-const C_BUS: u32 = 0x48D597;
-const C_CUR: u32 = 0xFFD84D;
-const C_LBL: u32 = 0xD8E1EE;
-const C_DIM: u32 = 0x6C778A;
-const C_BDR: u32 = 0x263244;
-const C_BDR_FOCUS: u32 = 0x4AA3FF;
-const C_SEL_MOD: u32 = 0x1A2432;
-const C_SEL_SIG: u32 = 0x1C2838;
-const C_SEL_WAVE: u32 = 0x202B3A;
-const C_RUL: u32 = 0x8AA4C0;
-const C_GRID: u32 = 0x1D2734;
-const C_MOD_BG: u32 = 0x141B25;
-const C_MOD_LBL: u32 = 0x9AB0C8;
-const C_MOD_SEL: u32 = 0x68BCFF;
-const C_BIT_LBL: u32 = 0x7A8698;
-const C_PINNED: u32 = 0x7EE787;
-const C_PATH: u32 = 0x73839A;
-const C_VALUE_BG: u32 = 0x111722;
-const C_OVERVIEW_WIN: u32 = 0x24527D;
-const C_OVERVIEW_ALL: u32 = 0x2A3444;
-const C_SPLIT: u32 = 0x33445C;
+const C_BG: u32 = 0x050505;
+const C_WAVE_ALT: u32 = 0x0C0C0C;
+const C_PANEL: u32 = 0xD4D0C8;
+const C_HEADER: u32 = 0xB8B4AA;
+const C_TOOLBAR: u32 = 0xC9C5BC;
+const C_OVERVIEW: u32 = 0x242424;
+const C_HI: u32 = 0x00FF38;
+const C_LO: u32 = 0x007A1C;
+const C_X: u32 = 0xFF6048;
+const C_Z: u32 = 0x4DA6FF;
+const C_BUS: u32 = 0xFFE24A;
+const C_CUR: u32 = 0xFFFFFF;
+const C_LBL: u32 = 0x111111;
+const C_DIM: u32 = 0x5F5B53;
+const C_BDR: u32 = 0x7B766C;
+const C_BDR_FOCUS: u32 = 0x2F6CAD;
+const C_SEL_MOD: u32 = 0xB7D7F5;
+const C_SEL_SIG: u32 = 0xC6DCF3;
+const C_SEL_WAVE: u32 = 0x1A2A1A;
+const C_RUL: u32 = 0xE8E8E8;
+const C_GRID: u32 = 0x222222;
+const C_MOD_BG: u32 = 0xE7E4DC;
+const C_MOD_LBL: u32 = 0x202020;
+const C_MOD_SEL: u32 = 0x064B9B;
+const C_BIT_LBL: u32 = 0xA8EAA8;
+const C_PINNED: u32 = 0x0060A8;
+const C_PATH: u32 = 0x3A3A3A;
+const C_VALUE_BG: u32 = 0xEFECE4;
+const C_OVERVIEW_WIN: u32 = 0x3D613D;
+const C_OVERVIEW_ALL: u32 = 0x101010;
+const C_SPLIT: u32 = 0x8C877C;
 
 static ACTIVE_THEME: AtomicUsize = AtomicUsize::new(0);
 static ACTIVE_FONT_ASCENT: AtomicUsize = AtomicUsize::new(10);
@@ -86,7 +91,7 @@ const MENU_ITEMS: [&str; 8] = [
     "File", "Edit", "Search", "View", "Trace", "Tools", "Window", "Help",
 ];
 const FILE_MENU_ITEMS: [&str; 3] = ["Open", "Reload", "Exit"];
-const VIEW_MENU_ITEMS: [&str; 1] = ["Refresh"];
+const VIEW_MENU_ITEMS: [&str; 2] = ["Refresh", "Signal names: full path / short"];
 const ALL_SCOPE_PATH: &str = "__all_scopes__";
 const ALL_SCOPE_LABEL: &str = "(all scopes)";
 
@@ -96,9 +101,20 @@ enum DragMode {
     LeftPanel,
     ModuleSplit,
     NameColumn,
+    ValueColumn,
+    ModVScroll,
     SigVScroll,
     SigHScroll,
     SigToWave,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum CursorHint {
+    Default,
+    ResizeH,
+    ResizeV,
+    ResizeNwse,
+    ResizeNesw,
 }
 
 // ── Module tree node ──────────────────────────────────────────────────────────
@@ -166,6 +182,7 @@ struct App {
     wave_sel: usize,
     wave_selected: HashSet<usize>,
     wave_scroll: usize,
+    loaded_signals: HashSet<usize>,
 
     // View
     zoom: f64,
@@ -175,6 +192,7 @@ struct App {
     status: String,
     left_w: i16,
     name_w: i16,
+    value_w: i16,
     mod_split: f32,
     filter_text: String,
     filter_edit: bool,
@@ -215,6 +233,7 @@ impl App {
             wave_sel: 0,
             wave_selected: HashSet::new(),
             wave_scroll: 0,
+            loaded_signals: HashSet::new(),
             zoom: 1.0,
             view_start: 0.0,
             cursor: None,
@@ -223,6 +242,7 @@ impl App {
                 .into(),
             left_w: LEFT_W,
             name_w: NAME_W,
+            value_w: VALUE_W,
             mod_split: MOD_SPLIT,
             filter_text: String::new(),
             filter_edit: false,
@@ -287,7 +307,7 @@ impl App {
             1 => "graphite",
             2 => "amber",
             3 => "midnight",
-            _ => "default",
+            _ => "verdi",
         }
     }
 
@@ -305,6 +325,34 @@ impl App {
         ((mod_panel_h - row_h) / row_h).max(1) as usize // subtract header
     }
 
+    fn set_mod_vscroll_from_mouse(&mut self, mouse_y: i16, win_h: i16) {
+        let body_h = win_h - TOP_H - STATUS_H - MARKER_H;
+        let mod_h = (body_h as f32 * self.mod_split) as i16;
+        let row_h = self.row_h();
+        let rows_y = TOP_H + row_h;
+        let rows_h = (mod_h - row_h).max(1);
+        let vis_rows = self.mod_vis_rows(mod_h);
+        let max_scroll = self.mod_rows.len().saturating_sub(vis_rows);
+        if max_scroll == 0 {
+            self.mod_scroll = 0;
+            return;
+        }
+        let rel = (mouse_y - rows_y).clamp(0, rows_h - 1) as f64 / rows_h as f64;
+        self.mod_scroll = (rel * max_scroll as f64).round() as usize;
+    }
+
+    fn hit_mod_vscroll(&self, mouse_x: i16, mouse_y: i16, win_h: i16) -> bool {
+        let body_h = win_h - TOP_H - STATUS_H - MARKER_H;
+        let mod_h = (body_h as f32 * self.mod_split) as i16;
+        let row_h = self.row_h();
+        let rows_y = TOP_H + row_h;
+        let rows_h = (mod_h - row_h).max(1);
+        mouse_x >= self.left_w - SB
+            && mouse_x < self.left_w
+            && mouse_y >= rows_y
+            && mouse_y < rows_y + rows_h
+    }
+
     fn sig_vis_rows(&self, sig_panel_h: i16) -> usize {
         ((sig_panel_h - self.row_h() - SB) / self.sig_h()).max(1) as usize
     }
@@ -315,16 +363,24 @@ impl App {
     fn name_split_x(&self) -> i16 {
         self.left_w + self.name_w
     }
+    fn value_split_x(&self) -> i16 {
+        self.left_w + self.name_w + self.value_w
+    }
 
     fn set_left_w(&mut self, x: i16, win_w: i16) {
-        let max_left = (win_w - VALUE_W - 220).max(220);
+        let max_left = (win_w - self.value_w - 220).max(220);
         self.left_w = x.clamp(180, max_left);
         self.clamp_sig_hscroll();
     }
 
     fn set_name_w(&mut self, x: i16, win_w: i16) {
-        let max_name = (win_w - self.left_w - VALUE_W - 120).max(120);
+        let max_name = (win_w - self.left_w - self.value_w - 120).max(120);
         self.name_w = (x - self.left_w).clamp(140, max_name);
+    }
+
+    fn set_value_w(&mut self, x: i16, win_w: i16) {
+        let max_value = (win_w - self.left_w - self.name_w - 120).max(60);
+        self.value_w = (x - self.left_w - self.name_w).clamp(60, max_value);
     }
 
     fn set_mod_split_from_y(&mut self, y: i16, win_h: i16) {
@@ -338,9 +394,14 @@ impl App {
 
     // ── Load ──────────────────────────────────────────────────────────────────
     fn load_text(&mut self, text: &str, name: &str) {
-        match parse_vcd(text) {
+        match parse_trace(text) {
             Ok(data) => {
-                let (n, mt, ts) = (data.signals.len(), data.max_time, data.timescale.clone());
+                let (fmt, n, mt, ts) = (
+                    data.format.clone(),
+                    data.signals.len(),
+                    data.max_time,
+                    data.timescale.clone(),
+                );
                 self.filename = name.to_string();
                 self.zoom = 1.0;
                 self.view_start = 0.0;
@@ -357,14 +418,15 @@ impl App {
                 self.wave_selected.clear();
                 self.wave_expanded.clear();
                 self.pinned.clear();
+                self.loaded_signals = (0..data.signals.len()).collect();
                 self.build_mod_tree(&data);
                 self.vcd = Some(data);
                 self.rebuild_mod_rows();
                 self.rebuild_sig_rows();
                 self.rebuild_wave();
                 self.status = format!(
-                    "Loaded '{}'  signals={}  end={}{}  pinned=0",
-                    name, n, mt, ts
+                    "Loaded {} '{}'  signals={}  end={}{}  pinned=0",
+                    fmt, name, n, mt, ts
                 );
             }
             Err(e) => self.status = format!("Parse error: {}", e),
@@ -380,19 +442,62 @@ impl App {
     }
 
     fn load_file(&mut self, path: &str) {
-        match std::fs::read_to_string(path) {
-            Ok(text) => {
+        match parse_trace_file(path) {
+            Ok(data) => {
                 self.file_path = Some(path.to_string());
                 let fname = Path::new(path)
                     .file_name()
                     .unwrap_or_default()
                     .to_string_lossy()
                     .to_string();
-                self.load_text(&text, &fname);
+                self.load_data(data, &fname, false);
                 self.file_browser_active = false;
             }
             Err(e) => self.status = format!("File error: {}", e),
         }
+    }
+
+    fn load_data(&mut self, data: VcdData, name: &str, fully_loaded: bool) {
+        let (fmt, n, mt, ts) = (
+            data.format.clone(),
+            data.signals.len(),
+            data.max_time,
+            data.timescale.clone(),
+        );
+        self.filename = name.to_string();
+        self.zoom = 1.0;
+        self.view_start = 0.0;
+        self.cursor = None;
+        self.markers = [None, None];
+        self.active_marker = 0;
+        self.mod_sel = 0;
+        self.mod_scroll = 0;
+        self.sig_sel = 0;
+        self.sig_scroll = 0;
+        self.wave_sel = 0;
+        self.wave_scroll = 0;
+        self.sig_selected.clear();
+        self.wave_selected.clear();
+        self.wave_expanded.clear();
+        self.pinned.clear();
+        self.loaded_signals.clear();
+        if fully_loaded || data.format != "XTrace" {
+            self.loaded_signals = (0..data.signals.len()).collect();
+        }
+        self.build_mod_tree(&data);
+        self.vcd = Some(data);
+        self.rebuild_mod_rows();
+        self.rebuild_sig_rows();
+        self.rebuild_wave();
+        let mode = if fmt == "XTrace" && !fully_loaded {
+            "metadata"
+        } else {
+            "full"
+        };
+        self.status = format!(
+            "Loaded {} {} '{}'  signals={}  end={}{}  pinned=0",
+            fmt, mode, name, n, mt, ts
+        );
     }
 
     fn file_vis_rows(&self, win_h: i16) -> usize {
@@ -422,12 +527,12 @@ impl App {
                 }
                 let is_dir = path.is_dir();
                 if !is_dir {
-                    let is_vcd = path
+                    let is_supported_trace = path
                         .extension()
                         .and_then(|ext| ext.to_str())
-                        .map(|ext| ext.eq_ignore_ascii_case("vcd"))
+                        .map(is_supported_trace_extension)
                         .unwrap_or(false);
-                    if !is_vcd {
+                    if !is_supported_trace {
                         continue;
                     }
                 }
@@ -549,7 +654,7 @@ impl App {
         }
     }
 
-    // ── Build module tree from VCD signals ────────────────────────────────────
+    // ── Build module tree from trace signals ──────────────────────────────────
     fn build_mod_tree(&mut self, vcd: &VcdData) {
         self.mod_nodes.clear();
         self.mod_roots.clear();
@@ -766,8 +871,54 @@ impl App {
         self.pinned.contains(&si)
     }
 
+    fn ensure_signals_loaded(&mut self, signal_indices: &[usize]) {
+        let Some(path) = self.file_path.clone() else {
+            return;
+        };
+        let Some(vcd) = &self.vcd else {
+            return;
+        };
+        if vcd.format != "XTrace" {
+            return;
+        }
+        let targets: Vec<(usize, String, usize)> = signal_indices
+            .iter()
+            .copied()
+            .filter(|si| !self.loaded_signals.contains(si))
+            .filter_map(|si| {
+                let sig = vcd.signals.get(si)?;
+                Some((si, sig.id.clone(), sig.width))
+            })
+            .collect();
+        if targets.is_empty() {
+            return;
+        }
+
+        let load_request: Vec<(String, usize)> = targets
+            .iter()
+            .map(|(_, id, width)| (id.clone(), *width))
+            .collect();
+        self.status = format!("Loading {} signal trace(s) from XTrace", load_request.len());
+        match load_xtrace_signal_changes(&path, &load_request) {
+            Ok(loaded) => {
+                if let Some(vcd) = &mut self.vcd {
+                    for (si, id, _) in targets {
+                        if let Some(changes) = loaded.get(&id) {
+                            vcd.changes.insert(id, changes.clone());
+                            self.loaded_signals.insert(si);
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                self.status = format!("XTrace lazy-load error: {}", e);
+            }
+        }
+    }
+
     fn pin(&mut self, si: usize) {
         if !self.is_pinned(si) {
+            self.ensure_signals_loaded(&[si]);
             self.pinned.push(si);
             self.rebuild_wave();
         }
@@ -810,6 +961,8 @@ impl App {
                 self.pinned.push(si);
             }
         }
+        let pinned = self.pinned.clone();
+        self.ensure_signals_loaded(&pinned);
         self.rebuild_wave();
     }
 
@@ -1062,8 +1215,25 @@ impl App {
                 self.status = "Window refreshed".into();
                 MenuAction::Refresh
             }
+            1 => {
+                self.toggle_full_names();
+                MenuAction::Refresh
+            }
             _ => MenuAction::None,
         }
+    }
+
+    fn toggle_full_names(&mut self) {
+        self.show_full_names = !self.show_full_names;
+        self.clamp_sig_hscroll();
+        self.status = format!(
+            "Signal names: {}",
+            if self.show_full_names {
+                "full path"
+            } else {
+                "short name"
+            }
+        );
     }
 
     fn select_mod_row(&mut self, row_idx: usize, win_h: i16) {
@@ -1203,7 +1373,7 @@ impl App {
     }
 
     fn set_cursor_from_wave_x(&mut self, mouse_x: i16, win_w: i16) {
-        let wave_x = self.left_w + self.name_w + VALUE_W;
+        let wave_x = self.left_w + self.name_w + self.value_w;
         let wave_w = (win_w - wave_x).max(1) as f64;
         let rel = (mouse_x - wave_x).clamp(0, wave_w as i16 - 1) as f64;
         let frac = rel / wave_w;
@@ -1294,6 +1464,10 @@ impl App {
             k if k == 0x71 || k == 0x51 || k == XK_ESCAPE => return true,
             0x73 | 0x53 => {
                 self.load_text(SAMPLE_VCD, "sample.vcd");
+                return false;
+            }
+            0x78 => {
+                self.load_text(SAMPLE_XTRACE, "sample.xtrace");
                 return false;
             }
             0x2F => {
@@ -1403,16 +1577,7 @@ impl App {
                 return false;
             }
             0x70 | 0x50 => {
-                self.show_full_names = !self.show_full_names;
-                self.clamp_sig_hscroll();
-                self.status = format!(
-                    "Signal labels: {}",
-                    if self.show_full_names {
-                        "full path"
-                    } else {
-                        "signal name"
-                    }
-                );
+                self.toggle_full_names();
                 return false;
             }
             0x7A | 0x5A => {
@@ -1423,7 +1588,7 @@ impl App {
             }
             0x74 | 0x54 => {
                 self.theme = (self.theme + 1) % 4;
-                self.status = format!("Color scheme: {}", self.theme_label());
+                self.status = format!("Theme: {}", self.theme_label());
                 return false;
             }
             _ => {}
@@ -1737,6 +1902,11 @@ impl App {
                 self.selected_menu = None;
                 return MenuAction::None;
             }
+            if (mouse_x - self.value_split_x()).abs() <= 3 && mouse_y >= TOP_H && mouse_y < marker_y {
+                self.drag_mode = DragMode::ValueColumn;
+                self.selected_menu = None;
+                return MenuAction::None;
+            }
             let split_y = sig_y;
             if mouse_x < self.left_w && (mouse_y - split_y).abs() <= 3 {
                 self.drag_mode = DragMode::ModuleSplit;
@@ -1759,8 +1929,13 @@ impl App {
                 if mouse_x < self.left_w {
                     if mouse_y < sig_y {
                         self.focus = Focus::ModTree;
+                        if self.hit_mod_vscroll(mouse_x, mouse_y, win_h) {
+                            self.drag_mode = DragMode::ModVScroll;
+                            self.set_mod_vscroll_from_mouse(mouse_y, win_h);
+                            return MenuAction::None;
+                        }
                         let row_h = self.row_h();
-                        if mouse_y >= TOP_H + row_h {
+                        if mouse_y >= TOP_H + row_h && mouse_x < self.left_w - SB {
                             let vis_row = ((mouse_y - (TOP_H + row_h)) / row_h) as usize;
                             let row_idx = self.mod_scroll + vis_row;
                             if row_idx < self.mod_rows.len() {
@@ -1814,7 +1989,7 @@ impl App {
 
                 self.focus = Focus::Wave;
                 if mouse_y < TOP_H + RULER_H {
-                    if mouse_x >= self.left_w + self.name_w + VALUE_W {
+                    if mouse_x >= self.left_w + self.name_w + self.value_w {
                         self.set_cursor_from_wave_x(mouse_x, win_w);
                     }
                     return MenuAction::None;
@@ -1837,10 +2012,28 @@ impl App {
                         && mouse_x < self.left_w + self.name_w
                     {
                         self.toggle_wave_row_expanded(row_idx);
-                    } else if mouse_x >= self.left_w + self.name_w + VALUE_W {
+                    } else if mouse_x >= self.left_w + self.name_w + self.value_w {
                         self.set_cursor_from_wave_x(mouse_x, win_w);
                     }
                 }
+                return MenuAction::None;
+            }
+        }
+
+        // Wheel in module tree: vertical scroll (4/5).
+        let in_mod_panel =
+            mouse_x >= 0 && mouse_x < self.left_w && mouse_y >= TOP_H && mouse_y < sig_y;
+        if in_mod_panel {
+            let body_h = win_h - TOP_H - STATUS_H - MARKER_H;
+            let mod_h = (body_h as f32 * self.mod_split) as i16;
+            let vis_rows = self.mod_vis_rows(mod_h);
+            let max_scroll = self.mod_rows.len().saturating_sub(vis_rows);
+            match button {
+                4 => self.mod_scroll = self.mod_scroll.saturating_sub(1),
+                5 => self.mod_scroll = (self.mod_scroll + 1).min(max_scroll),
+                _ => {}
+            }
+            if matches!(button, 4 | 5) {
                 return MenuAction::None;
             }
         }
@@ -1869,7 +2062,7 @@ impl App {
             }
         }
 
-        let wx = self.left_w + self.name_w + VALUE_W;
+        let wx = self.left_w + self.name_w + self.value_w;
         let in_wave_panel = mouse_x >= wx && mouse_y >= TOP_H && mouse_y < marker_y;
         if in_wave_panel {
             let ww = (win_w - wx).max(1) as f64;
@@ -1890,11 +2083,52 @@ impl App {
             DragMode::None => {}
             DragMode::LeftPanel => self.set_left_w(mouse_x, win_w),
             DragMode::NameColumn => self.set_name_w(mouse_x, win_w),
+            DragMode::ValueColumn => self.set_value_w(mouse_x, win_w),
             DragMode::ModuleSplit => self.set_mod_split_from_y(mouse_y, win_h),
+            DragMode::ModVScroll => self.set_mod_vscroll_from_mouse(mouse_y, win_h),
             DragMode::SigVScroll => self.set_sig_vscroll_from_mouse(mouse_y, win_h),
             DragMode::SigHScroll => self.set_sig_hscroll_from_mouse(mouse_x),
             DragMode::SigToWave => {}
         }
+    }
+
+    /// Cursor shape to show for the pointer at (mouse_x, mouse_y), accounting for
+    /// an in-progress splitter drag and hover over splitters / window edges.
+    fn cursor_hint(&self, mouse_x: i16, mouse_y: i16, win_w: i16, win_h: i16) -> CursorHint {
+        match self.drag_mode {
+            DragMode::LeftPanel | DragMode::NameColumn | DragMode::ValueColumn => {
+                return CursorHint::ResizeH
+            }
+            DragMode::ModuleSplit => return CursorHint::ResizeV,
+            DragMode::None => {}
+            _ => return CursorHint::Default,
+        }
+        if self.file_browser_active {
+            return CursorHint::Default;
+        }
+        if let Some(dir) = resize_edge_direction(mouse_x, mouse_y, win_w, win_h) {
+            return match dir {
+                NET_WM_MOVERESIZE_SIZE_LEFT | NET_WM_MOVERESIZE_SIZE_RIGHT => CursorHint::ResizeH,
+                NET_WM_MOVERESIZE_SIZE_TOP | NET_WM_MOVERESIZE_SIZE_BOTTOM => CursorHint::ResizeV,
+                NET_WM_MOVERESIZE_SIZE_TOPLEFT | NET_WM_MOVERESIZE_SIZE_BOTTOMRIGHT => {
+                    CursorHint::ResizeNwse
+                }
+                _ => CursorHint::ResizeNesw,
+            };
+        }
+        let (_, _, sig_y, marker_y) = self.body_layout(win_h);
+        if mouse_y >= TOP_H && mouse_y < marker_y {
+            if (mouse_x - self.left_split_x()).abs() <= 3
+                || (mouse_x - self.name_split_x()).abs() <= 3
+                || (mouse_x - self.value_split_x()).abs() <= 3
+            {
+                return CursorHint::ResizeH;
+            }
+            if mouse_x < self.left_w && (mouse_y - sig_y).abs() <= 3 {
+                return CursorHint::ResizeV;
+            }
+        }
+        CursorHint::Default
     }
 
     fn handle_button_release(&mut self, mouse_x: i16, mouse_y: i16, win_h: i16) {
@@ -2147,6 +2381,13 @@ fn menu_item_w(label: &str) -> i16 {
     menu_tw(label) + 20
 }
 
+fn is_supported_trace_extension(ext: &str) -> bool {
+    matches!(
+        ext.to_ascii_lowercase().as_str(),
+        "vcd" | "xtrace" | "xtr" | "xt" | "xtt"
+    )
+}
+
 fn trunc_l(s: &str, max_c: usize) -> String {
     if s.len() <= max_c {
         s.to_string()
@@ -2202,7 +2443,7 @@ fn render_overview(
             C_OVERVIEW_ALL,
             x + 4,
             y + 4,
-            "Overview",
+            "Time Overview",
         );
         return;
     }
@@ -2234,7 +2475,7 @@ fn render_overview(
         C_OVERVIEW,
         x + 4,
         y + 4,
-        "Overview",
+        "Time Overview",
     );
     let right = format!("0 .. {:.0}", max_t);
     txt(
@@ -2432,7 +2673,7 @@ fn render(
             _ => "delta --".into(),
         };
         format!(
-            " {}   zoom {:.2}x   view {:.0}..{:.0}{}   {}   {}   size {}   theme {}   pinned {}   focus {}   filter {} ",
+            " nWave  {}   zoom {:.2}x   view {:.0}..{:.0}{}   {}   {}   size {}   theme {}   pinned {}   focus {}   filter {} ",
             if app.filename.is_empty() { "untitled" } else { &app.filename },
             app.zoom,
             app.view_start,
@@ -2447,8 +2688,7 @@ fn render(
             if app.filter_text.is_empty() { "all" } else { &app.filter_text },
         )
     } else {
-        " No VCD loaded   s=sample   Tab=cycle focus   /=filter   drag splitters/signals   q=quit "
-            .into()
+        " No trace loaded   s=VCD sample   x=XTrace sample   Tab=focus   /=filter   q=quit ".into()
     };
     txt(
         conn,
@@ -2641,7 +2881,7 @@ fn render(
             .filter(|p| p.as_str() != ALL_SCOPE_PATH)
             .count();
         let hdr_txt = trunc_r(
-            &format!(" Scope Browser  [{} roots]  {}", root_count, scope_lbl),
+            &format!(" Design Browser  [{} roots]  {}", root_count, scope_lbl),
             ((app.left_w - 6) / FW) as usize,
         );
         txt(
@@ -2661,7 +2901,9 @@ fn render(
         );
 
         let mod_rows_y = mod_y + row_h;
-        let mod_avail = ((mod_h - row_h) / row_h).max(0) as usize;
+        let mod_rows_h = (mod_h - row_h).max(1);
+        let mod_content_w = (app.left_w - SB).max(1);
+        let mod_avail = (mod_rows_h / row_h).max(0) as usize;
         let mscroll = app.mod_scroll.min(app.mod_rows.len().saturating_sub(1));
 
         for (ri, path) in app
@@ -2683,7 +2925,7 @@ fn render(
             let exp = node.map(|n| n.expanded).unwrap_or(false);
 
             let bg = if is_sel { C_SEL_MOD } else { C_MOD_BG };
-            fill(conn, pix, gc, bg, 0, ry, app.left_w as u16, row_h as u16);
+            fill(conn, pix, gc, bg, 0, ry, mod_content_w as u16, row_h as u16);
 
             let px = depth as i16 * INDENT + 4;
             let marker = if has_ch {
@@ -2697,7 +2939,7 @@ fn render(
             };
             let col = if is_sel { C_MOD_SEL } else { C_MOD_LBL };
             let lbl = format!("{}{}", marker, name);
-            let max_c = ((app.left_w - px - 4) / FW).max(0) as usize;
+            let max_c = ((mod_content_w - px - 4) / FW).max(0) as usize;
             txt(
                 conn,
                 pix,
@@ -2721,10 +2963,53 @@ fn render(
                 C_BDR,
                 0,
                 ry + row_h - 1,
-                app.left_w,
+                mod_content_w,
                 ry + row_h - 1,
             );
         }
+
+        // Module tree vertical scrollbar
+        let mvbar_x = mod_content_w;
+        fill(
+            conn,
+            pix,
+            gc,
+            C_MOD_BG,
+            mvbar_x,
+            mod_rows_y,
+            SB as u16,
+            mod_rows_h as u16,
+        );
+        let mvis_rows = app.mod_vis_rows(mod_h);
+        let mtotal_rows = app.mod_rows.len().max(1);
+        let mmax_vscroll = app.mod_rows.len().saturating_sub(mvis_rows);
+        let mvthumb_h = if mmax_vscroll == 0 {
+            mod_rows_h
+        } else {
+            ((mod_rows_h as f64 * mvis_rows as f64 / mtotal_rows as f64).round() as i16)
+                .clamp(10, mod_rows_h)
+        };
+        let mvthumb_y = if mmax_vscroll == 0 {
+            mod_rows_y
+        } else {
+            mod_rows_y
+                + (((mod_rows_h - mvthumb_h) as f64 * mscroll as f64 / mmax_vscroll as f64).round()
+                    as i16)
+        };
+        fill(
+            conn,
+            pix,
+            gc,
+            if app.focus == Focus::ModTree {
+                C_MOD_SEL
+            } else {
+                C_BDR
+            },
+            mvbar_x + 1,
+            mvthumb_y,
+            (SB - 2) as u16,
+            mvthumb_h as u16,
+        );
 
         // ── Signal list ───────────────────────────────────────────────────────────
         // Header bar
@@ -2749,7 +3034,7 @@ fn render(
             "direct-signals"
         };
         let sig_hdr = format!(
-            " Objects  {}={}  filter={}",
+            " Signals  {}={}  filter={}",
             sig_mode,
             app.sig_rows.len(),
             filter_lbl
@@ -2956,7 +3241,7 @@ fn render(
     // ── Waveform area ─────────────────────────────────────────────────────────
     let wx = app.left_w;
     let value_x = wx + app.name_w;
-    let wave_x = value_x + VALUE_W;
+    let wave_x = value_x + app.value_w;
     let wave_w = w - wave_x;
 
     let Some(vcd) = &app.vcd else {
@@ -2993,6 +3278,7 @@ fn render(
         4,
         body_h as u16,
     );
+    fill(conn, pix, gc, C_SPLIT, value_x - 2, TOP_H, 4, body_h as u16);
     fill(conn, pix, gc, C_SPLIT, wave_x - 2, TOP_H, 4, body_h as u16);
     fill(conn, pix, gc, C_SPLIT, 0, sig_y - 2, app.left_w as u16, 4);
     seg(conn, pix, gc, bdr, app.left_w, TOP_H, app.left_w, marker_y);
@@ -3007,7 +3293,7 @@ fn render(
         C_PANEL,
         wx,
         TOP_H,
-        (app.name_w + VALUE_W) as u16,
+        (app.name_w + app.value_w) as u16,
         RULER_H as u16,
     );
     txt(
@@ -3106,7 +3392,7 @@ fn render(
                     C_VALUE_BG,
                     value_x,
                     ry,
-                    VALUE_W as u16,
+                    app.value_w as u16,
                     wave_h as u16,
                 );
 
@@ -3146,7 +3432,7 @@ fn render(
                 let sample_t = app.cursor.unwrap_or(app.view_start);
                 let val = vcd.get_value_at(&sig.id, sample_t as u64);
                 let dv = fmt_val(&val, sig.width);
-                let vmax = ((VALUE_W - 8) / FW).max(0) as usize;
+                let vmax = ((app.value_w - 8) / FW).max(0) as usize;
                 txt(
                     conn,
                     pix,
@@ -3231,7 +3517,7 @@ fn render(
                     C_VALUE_BG,
                     value_x,
                     ry,
-                    VALUE_W as u16,
+                    app.value_w as u16,
                     wave_h as u16,
                 );
 
@@ -3309,7 +3595,7 @@ fn render(
                 );
             }
         }
-        seg(conn, pix, gc, C_BDR, value_x, ry, value_x + VALUE_W, ry);
+        seg(conn, pix, gc, C_BDR, value_x, ry, value_x + app.value_w, ry);
         seg(
             conn,
             pix,
@@ -3765,6 +4051,107 @@ fn get_keysym(keysyms: &[u32], kpc: u8, keycode: u8, min_kc: u8, state: KeyButMa
     keysyms.get(base).copied().unwrap_or(0)
 }
 
+// _NET_WM_MOVERESIZE direction constants per EWMH spec.
+const NET_WM_MOVERESIZE_SIZE_TOPLEFT: u8 = 0;
+const NET_WM_MOVERESIZE_SIZE_TOP: u8 = 1;
+const NET_WM_MOVERESIZE_SIZE_TOPRIGHT: u8 = 2;
+const NET_WM_MOVERESIZE_SIZE_RIGHT: u8 = 3;
+const NET_WM_MOVERESIZE_SIZE_BOTTOMRIGHT: u8 = 4;
+const NET_WM_MOVERESIZE_SIZE_BOTTOM: u8 = 5;
+const NET_WM_MOVERESIZE_SIZE_BOTTOMLEFT: u8 = 6;
+const NET_WM_MOVERESIZE_SIZE_LEFT: u8 = 7;
+
+const RESIZE_EDGE: i16 = 4;
+const RESIZE_CORNER: i16 = 14;
+
+fn resize_edge_direction(x: i16, y: i16, w: i16, h: i16) -> Option<u8> {
+    if w <= 0 || h <= 0 {
+        return None;
+    }
+    let on_left = x >= 0 && x < RESIZE_EDGE;
+    let on_right = x >= w - RESIZE_EDGE && x < w;
+    let on_top = y >= 0 && y < RESIZE_EDGE;
+    let on_bottom = y >= h - RESIZE_EDGE && y < h;
+    let near_left = x < RESIZE_CORNER;
+    let near_right = x >= w - RESIZE_CORNER;
+    let near_top = y < RESIZE_CORNER;
+    let near_bottom = y >= h - RESIZE_CORNER;
+
+    if (on_top || on_left) && near_top && near_left {
+        return Some(NET_WM_MOVERESIZE_SIZE_TOPLEFT);
+    }
+    if (on_top || on_right) && near_top && near_right {
+        return Some(NET_WM_MOVERESIZE_SIZE_TOPRIGHT);
+    }
+    if (on_bottom || on_left) && near_bottom && near_left {
+        return Some(NET_WM_MOVERESIZE_SIZE_BOTTOMLEFT);
+    }
+    if (on_bottom || on_right) && near_bottom && near_right {
+        return Some(NET_WM_MOVERESIZE_SIZE_BOTTOMRIGHT);
+    }
+    if on_left {
+        return Some(NET_WM_MOVERESIZE_SIZE_LEFT);
+    }
+    if on_right {
+        return Some(NET_WM_MOVERESIZE_SIZE_RIGHT);
+    }
+    if on_bottom {
+        return Some(NET_WM_MOVERESIZE_SIZE_BOTTOM);
+    }
+    if on_top {
+        return Some(NET_WM_MOVERESIZE_SIZE_TOP);
+    }
+    None
+}
+
+// Glyph indices in the X11 "cursor" font.
+const XC_SB_H_DOUBLE_ARROW: u16 = 108;
+const XC_SB_V_DOUBLE_ARROW: u16 = 116;
+const XC_BOTTOM_LEFT_CORNER: u16 = 12;
+const XC_BOTTOM_RIGHT_CORNER: u16 = 14;
+
+#[derive(Clone, Copy, Default)]
+struct ResizeCursors {
+    h: u32,
+    v: u32,
+    nwse: u32,
+    nesw: u32,
+}
+
+impl ResizeCursors {
+    /// X11 cursor ID for a hint, or 0 (CursorNone, inherit parent) for Default
+    /// or when the cursor font was unavailable.
+    fn get(&self, hint: CursorHint) -> u32 {
+        match hint {
+            CursorHint::Default => 0,
+            CursorHint::ResizeH => self.h,
+            CursorHint::ResizeV => self.v,
+            CursorHint::ResizeNwse => self.nwse,
+            CursorHint::ResizeNesw => self.nesw,
+        }
+    }
+}
+
+fn make_resize_cursors(conn: &RustConnection) -> Res<ResizeCursors> {
+    let font = conn.generate_id()?;
+    if conn.open_font(font, b"cursor")?.check().is_err() {
+        return Ok(ResizeCursors::default());
+    }
+    let mk = |glyph: u16| -> Res<u32> {
+        let c = conn.generate_id()?;
+        conn.create_glyph_cursor(
+            c, font, font, glyph, glyph + 1, 0, 0, 0, 0xffff, 0xffff, 0xffff,
+        )?;
+        Ok(c)
+    };
+    Ok(ResizeCursors {
+        h: mk(XC_SB_H_DOUBLE_ARROW)?,
+        v: mk(XC_SB_V_DOUBLE_ARROW)?,
+        nwse: mk(XC_BOTTOM_RIGHT_CORNER)?,
+        nesw: mk(XC_BOTTOM_LEFT_CORNER)?,
+    })
+}
+
 fn open_font_any(conn: &RustConnection, names: &[&[u8]]) -> Res<u32> {
     for name in names {
         let font = conn.generate_id()?;
@@ -3787,7 +4174,7 @@ fn main() -> Res<()> {
                 display = args.get(i).cloned();
             }
             "-h" | "--help" => {
-                eprintln!("claudeV [-d DISPLAY] [file.vcd]");
+                eprintln!("claudeV [-d DISPLAY] [file.vcd|file.xtrace]");
                 eprintln!("Tab=cycle focus (Browser→Objects→Wave)");
                 eprintln!("/=edit filter  X=clear filter  drag splitters/signals with mouse");
                 eprintln!(
@@ -3803,6 +4190,7 @@ fn main() -> Res<()> {
                 );
                 eprintln!("WAVE:    j/k=nav  d/Del=remove  J/K=reorder  e=expand bus");
                 eprintln!("VIEW:    +/-/f=zoom  h/l=pan  c=cursor  n/N=edge  q=quit");
+                eprintln!("SAMPLES: s=VCD sample  x=XTrace sample");
                 std::process::exit(0);
             }
             other if !other.starts_with('-') => file_arg = Some(other.to_string()),
@@ -3817,6 +4205,11 @@ fn main() -> Res<()> {
 
     let wmp = conn.intern_atom(false, b"WM_PROTOCOLS")?.reply()?.atom;
     let wmd = conn.intern_atom(false, b"WM_DELETE_WINDOW")?.reply()?.atom;
+    let net_mr = conn
+        .intern_atom(false, b"_NET_WM_MOVERESIZE")?
+        .reply()?
+        .atom;
+    let root_win = screen.root;
     let win: u32 = conn.generate_id()?;
     conn.create_window(
         COPY_DEPTH_FROM_PARENT,
@@ -3844,7 +4237,7 @@ fn main() -> Res<()> {
         win,
         AtomEnum::WM_NAME,
         AtomEnum::STRING,
-        b"claudeV",
+        b"claudeV nWave",
     )?;
 
     let fonts = [
@@ -3865,6 +4258,19 @@ fn main() -> Res<()> {
     )?;
     let mut pix: u32 = conn.generate_id()?;
     conn.create_pixmap(screen.root_depth, pix, win, ww, wh)?;
+
+    // Resize cursors from the standard "cursor" font (best-effort).
+    let cursors = make_resize_cursors(&conn).unwrap_or_default();
+    let mut cur_applied: Option<CursorHint> = None;
+    let mut apply_cursor = |conn: &RustConnection, hint: CursorHint| {
+        if cur_applied == Some(hint) {
+            return;
+        }
+        cur_applied = Some(hint);
+        let cid = cursors.get(hint);
+        let _ = conn.change_window_attributes(win, &ChangeWindowAttributesAux::new().cursor(cid));
+        let _ = conn.flush();
+    };
 
     let mkc = conn.setup().min_keycode;
     let xkc = conn.setup().max_keycode;
@@ -3907,20 +4313,46 @@ fn main() -> Res<()> {
                 dirty = true;
             }
             Event::ButtonPress(e) => {
+                if e.detail == 1 {
+                    if let Some(dir) =
+                        resize_edge_direction(e.event_x, e.event_y, ww as i16, wh as i16)
+                    {
+                        let _ = conn.ungrab_pointer(x11rb::CURRENT_TIME);
+                        let data = [
+                            e.root_x as u32,
+                            e.root_y as u32,
+                            dir as u32,
+                            e.detail as u32,
+                            1u32, // source indication: normal application
+                        ];
+                        let msg = ClientMessageEvent::new(32, win, net_mr, data);
+                        let _ = conn.send_event(
+                            false,
+                            root_win,
+                            EventMask::SUBSTRUCTURE_NOTIFY | EventMask::SUBSTRUCTURE_REDIRECT,
+                            msg,
+                        );
+                        let _ = conn.flush();
+                        continue;
+                    }
+                }
                 match app.handle_button(
                     e.detail, e.state, e.event_x, e.event_y, ww as i16, wh as i16,
                 ) {
                     MenuAction::Quit => break,
                     MenuAction::Refresh | MenuAction::None => {}
                 }
+                apply_cursor(&conn, app.cursor_hint(e.event_x, e.event_y, ww as i16, wh as i16));
                 dirty = true;
             }
             Event::MotionNotify(e) => {
                 app.handle_motion(e.event_x, e.event_y, ww as i16, wh as i16);
+                apply_cursor(&conn, app.cursor_hint(e.event_x, e.event_y, ww as i16, wh as i16));
                 dirty = true;
             }
             Event::ButtonRelease(e) => {
                 app.handle_button_release(e.event_x, e.event_y, wh as i16);
+                apply_cursor(&conn, app.cursor_hint(e.event_x, e.event_y, ww as i16, wh as i16));
                 dirty = true;
             }
             Event::ClientMessage(e) => {
@@ -3951,6 +4383,44 @@ fn main() -> Res<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resize_edge_direction_detects_corners_and_edges() {
+        let (w, h) = (200i16, 100i16);
+        assert_eq!(
+            resize_edge_direction(1, 1, w, h),
+            Some(NET_WM_MOVERESIZE_SIZE_TOPLEFT)
+        );
+        assert_eq!(
+            resize_edge_direction(w - 1, 1, w, h),
+            Some(NET_WM_MOVERESIZE_SIZE_TOPRIGHT)
+        );
+        assert_eq!(
+            resize_edge_direction(1, h - 1, w, h),
+            Some(NET_WM_MOVERESIZE_SIZE_BOTTOMLEFT)
+        );
+        assert_eq!(
+            resize_edge_direction(w - 1, h - 1, w, h),
+            Some(NET_WM_MOVERESIZE_SIZE_BOTTOMRIGHT)
+        );
+        assert_eq!(
+            resize_edge_direction(0, h / 2, w, h),
+            Some(NET_WM_MOVERESIZE_SIZE_LEFT)
+        );
+        assert_eq!(
+            resize_edge_direction(w - 1, h / 2, w, h),
+            Some(NET_WM_MOVERESIZE_SIZE_RIGHT)
+        );
+        assert_eq!(
+            resize_edge_direction(w / 2, h - 1, w, h),
+            Some(NET_WM_MOVERESIZE_SIZE_BOTTOM)
+        );
+        assert_eq!(
+            resize_edge_direction(w / 2, 0, w, h),
+            Some(NET_WM_MOVERESIZE_SIZE_TOP)
+        );
+        assert_eq!(resize_edge_direction(w / 2, h / 2, w, h), None);
+    }
 
     #[test]
     fn get_keysym_uses_shift_level_when_shift_is_pressed() {

@@ -1,6 +1,6 @@
 # claudeV User Guide
 
-`claudeV` is a native X11 waveform viewer for VCD files.
+`claudeV` is a native X11 waveform viewer for VCD and XTrace text files.
 
 ## 1. Prerequisites
 
@@ -27,10 +27,11 @@ Run with no file:
 cargo run
 ```
 
-Run with a VCD file:
+Run with a VCD or XTrace file:
 
 ```bash
 cargo run -- path/to/file.vcd
+cargo run -- path/to/file.xtrace
 ```
 
 Run with an explicit display:
@@ -52,6 +53,7 @@ The window has three main work areas:
 - Module Browser (top-left): scope tree.
 - Signals (bottom-left): signals in the selected scope.
 - Wave (right): pinned waveform rows.
+- The default theme uses a Verdi-like grey shell with a black waveform canvas.
 
 There is also:
 
@@ -64,7 +66,7 @@ There is also:
 
 ## 5. Quick Workflow
 
-1. Open a VCD file from CLI or `File -> Open`.
+1. Open a VCD or XTrace file from CLI or `File -> Open`.
 2. In Module Browser, pick a scope (`j/k`, arrows, or mouse click).
 3. In Signals focus, add desired signals with `a` or `Enter`.
 4. Switch to Wave focus with `Tab` and inspect/reorder wave rows.
@@ -76,12 +78,13 @@ There is also:
 
 - `q` / `Esc`: quit.
 - `s`: load built-in sample VCD.
+- `x`: load built-in sample XTrace.
 - `Tab`: cycle focus `Browser -> Signals -> Wave`.
 - `/`: start filter editing.
 - `X`: clear filter.
 - `p`: toggle signal labels between full hierarchical path and short signal name.
 - `z`: cycle display size `default -> big -> large -> huge`.
-- `t`: cycle color scheme `default -> graphite -> amber -> midnight`.
+- `t`: cycle theme `verdi -> graphite -> amber -> midnight`.
 - `+` or `=`: zoom in.
 - `-` or `_`: zoom out.
 - `f` or `0`: fit full timeline.
@@ -138,7 +141,7 @@ There is also:
 ## 7. Mouse Controls
 
 - Click top `File` menu:
-  - `Open`: file browser panel (shows directories and `.vcd` files).
+  - `Open`: file browser panel (shows directories and supported trace files).
   - `Reload`: reload current file.
   - `Exit`: quit.
 - Click top `View` menu:
@@ -176,8 +179,8 @@ There is also:
   - Confirm path exists and is readable.
   - Use `File -> Open` to browse and select.
 - `Parse error`:
-  - Input may not match supported VCD constructs.
-  - Try with a simpler/known-good VCD file.
+  - Input may not match supported VCD or XTrace-T constructs.
+  - Try with a simpler/known-good trace file.
 - `Reload unavailable: no file loaded`:
   - Load a file first (CLI path or `File -> Open`).
 
@@ -190,5 +193,5 @@ cargo run -- --help
 Current usage:
 
 ```text
-claudeV [-d DISPLAY] [file.vcd]
+claudeV [-d DISPLAY] [file.vcd|file.xtrace]
 ```

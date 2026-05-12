@@ -1,12 +1,12 @@
 # claudeV
 
-Native X11 waveform viewer for VCD files.
+Native X11 waveform viewer for VCD and XTrace text files.
 
 ![VCD Viewer](docs/screenshot.png)
 
 ## Features
 
-- Load VCD files from CLI or in-app file browser.
+- Load VCD or XTrace-T files from CLI or in-app file browser.
 - Browse module scopes and signal lists.
 - Pin/reorder wave rows and expand buses into bit slices.
 - Zoom, pan, cursor placement, and A/B marker measurements.
@@ -14,6 +14,7 @@ Native X11 waveform viewer for VCD files.
 - Full-path or short-name signal labels.
 - Multi-select signals and waveforms with keyboard or mouse.
 - Resizable panels, selectable waveform/font sizes, and four color schemes.
+- Verdi-style default theme with grey EDA chrome and black waveform canvas.
 
 ## Requirements
 
@@ -46,6 +47,12 @@ Run with a file:
 cargo run -- path/to/file.vcd
 ```
 
+Run with an XTrace file:
+
+```bash
+cargo run -- path/to/file.xtrace
+```
+
 Specify X11 display:
 
 ```bash
@@ -55,7 +62,7 @@ cargo run -- -d :0 path/to/file.vcd
 Binary usage:
 
 ```text
-claudeV [-d DISPLAY] [file.vcd]
+claudeV [-d DISPLAY] [file.vcd|file.xtrace]
 ```
 
 ## Quick Controls
@@ -67,19 +74,20 @@ claudeV [-d DISPLAY] [file.vcd]
 - `e`: expand/collapse bus
 - `p`: toggle full-path vs signal-name labels
 - `z`: cycle size `default -> big -> large -> huge`
-- `t`: cycle color scheme
+- `t`: cycle theme
 - `+` / `-`: zoom in/out
 - `h` / `l`: pan left/right
 - `c`: set cursor
 - `m`, `M`, `D`: marker set/switch/clear
 - `/`, `X`: edit/clear signal filter
+- `x`: load bundled XTrace sample
 - `q` or `Esc`: quit
 
 ## Menus
 
 Top `File` menu actions:
 
-- `Open`: browse directories and `.vcd` files.
+- `Open`: browse directories and `.vcd`, `.xtrace`, `.xtr`, `.xt`, or `.xtt` files.
 - `Reload`: reload current file.
 - `Exit`: quit application.
 
